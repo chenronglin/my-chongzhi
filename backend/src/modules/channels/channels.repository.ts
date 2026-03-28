@@ -34,7 +34,6 @@ export class ChannelsRepository {
     channelCode: string;
     channelName: string;
     channelType: string;
-    parentChannelId?: string;
   }): Promise<Channel> {
     const rows = await db<Channel[]>`
       INSERT INTO channel.channels (
@@ -42,8 +41,8 @@ export class ChannelsRepository {
         channel_code,
         channel_name,
         channel_type,
-        parent_channel_id,
         status,
+        settlement_mode,
         created_at,
         updated_at
       )
@@ -52,8 +51,8 @@ export class ChannelsRepository {
         ${input.channelCode},
         ${input.channelName},
         ${input.channelType},
-        ${input.parentChannelId ?? null},
         'ACTIVE',
+        'PREPAID',
         NOW(),
         NOW()
       )
@@ -62,9 +61,8 @@ export class ChannelsRepository {
         channel_code AS "channelCode",
         channel_name AS "channelName",
         channel_type AS "channelType",
-        parent_channel_id AS "parentChannelId",
         status,
-        settlement_subject_id AS "settlementSubjectId",
+        settlement_mode AS "settlementMode",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
     `;
@@ -85,9 +83,8 @@ export class ChannelsRepository {
         channel_code AS "channelCode",
         channel_name AS "channelName",
         channel_type AS "channelType",
-        parent_channel_id AS "parentChannelId",
         status,
-        settlement_subject_id AS "settlementSubjectId",
+        settlement_mode AS "settlementMode",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM channel.channels
@@ -103,9 +100,8 @@ export class ChannelsRepository {
         channel_code AS "channelCode",
         channel_name AS "channelName",
         channel_type AS "channelType",
-        parent_channel_id AS "parentChannelId",
         status,
-        settlement_subject_id AS "settlementSubjectId",
+        settlement_mode AS "settlementMode",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
       FROM channel.channels
@@ -170,41 +166,34 @@ export class ChannelsRepository {
     `;
   }
 
-  async addAuthorization(input: {
-    channelId: string;
-    productId?: string;
-    skuId?: string;
-  }): Promise<void> {
+  async addAuthorization(input: { channelId: string; productId: string }): Promise<void> {
     await db`
       INSERT INTO channel.channel_product_authorizations (
         id,
         channel_id,
         product_id,
-        sku_id,
         status,
         created_at
       )
       VALUES (
         ${generateId()},
         ${input.channelId},
-        ${input.productId ?? null},
-        ${input.skuId ?? null},
+        ${input.productId},
         'ACTIVE',
         NOW()
       )
+      ON CONFLICT (channel_id, product_id) DO UPDATE
+      SET status = EXCLUDED.status
     `;
   }
 
-  async isAuthorized(channelId: string, productId: string, skuId: string): Promise<boolean> {
-    const row = await first<{ count: number }>(db`
+  async isAuthorized(channelId: string, productId: string): Promise<boolean> {
+    const row = await first<{ count: number }>(db<{ count: number }[]>`
       SELECT COUNT(*)::int AS count
       FROM channel.channel_product_authorizations
       WHERE channel_id = ${channelId}
+        AND product_id = ${productId}
         AND status = 'ACTIVE'
-        AND (
-          sku_id = ${skuId}
-          OR product_id = ${productId}
-        )
     `);
 
     return (row?.count ?? 0) > 0;
@@ -212,14 +201,14 @@ export class ChannelsRepository {
 
   async upsertPricePolicy(input: {
     channelId: string;
-    skuId: string;
+    productId: string;
     salePrice: number;
   }): Promise<void> {
     await db`
       INSERT INTO channel.channel_price_policies (
         id,
         channel_id,
-        sku_id,
+        product_id,
         sale_price,
         currency,
         status,
@@ -229,22 +218,28 @@ export class ChannelsRepository {
       VALUES (
         ${generateId()},
         ${input.channelId},
-        ${input.skuId},
+        ${input.productId},
         ${input.salePrice},
         'CNY',
         'ACTIVE',
         NOW(),
         NOW()
       )
+      ON CONFLICT (channel_id, product_id) DO UPDATE
+      SET
+        sale_price = EXCLUDED.sale_price,
+        currency = EXCLUDED.currency,
+        status = EXCLUDED.status,
+        updated_at = NOW()
     `;
   }
 
-  async findPricePolicy(channelId: string, skuId: string): Promise<ChannelPricePolicy | null> {
+  async findPricePolicy(channelId: string, productId: string): Promise<ChannelPricePolicy | null> {
     const row = await first<ChannelPricePolicy>(db<ChannelPricePolicy[]>`
       SELECT
         id,
         channel_id AS "channelId",
-        sku_id AS "skuId",
+        product_id AS "productId",
         sale_price AS "salePrice",
         currency,
         status,
@@ -252,7 +247,7 @@ export class ChannelsRepository {
         effective_to AS "effectiveTo"
       FROM channel.channel_price_policies
       WHERE channel_id = ${channelId}
-        AND sku_id = ${skuId}
+        AND product_id = ${productId}
         AND status = 'ACTIVE'
       ORDER BY created_at DESC
       LIMIT 1

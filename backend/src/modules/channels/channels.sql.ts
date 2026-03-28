@@ -5,9 +5,8 @@ export const channelsSql = {
       channel_code AS "channelCode",
       channel_name AS "channelName",
       channel_type AS "channelType",
-      parent_channel_id AS "parentChannelId",
       status,
-      settlement_subject_id AS "settlementSubjectId",
+      settlement_mode AS "settlementMode",
       created_at AS "createdAt",
       updated_at AS "updatedAt"
     FROM channel.channels

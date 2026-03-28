@@ -3,9 +3,8 @@ export interface Channel {
   channelCode: string;
   channelName: string;
   channelType: string;
-  parentChannelId: string | null;
   status: string;
-  settlementSubjectId: string | null;
+  settlementMode: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,7 +36,7 @@ export interface ChannelCallbackConfig {
 export interface ChannelPricePolicy {
   id: string;
   channelId: string;
-  skuId: string;
+  productId: string;
   salePrice: number;
   currency: string;
   status: string;

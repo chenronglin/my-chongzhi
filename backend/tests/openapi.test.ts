@@ -19,7 +19,7 @@ describe('OpenAPI 文档服务', () => {
       openapi?: string;
       info?: Record<string, unknown>;
       tags?: Array<{ name?: string }>;
-      paths?: Record<string, unknown>;
+      paths?: Record<string, { get?: { summary?: string; tags?: string[] } }>;
     };
 
     expect(response.status).toBe(200);
@@ -30,5 +30,7 @@ describe('OpenAPI 文档服务', () => {
     });
     expect(json.tags?.some((tag) => tag.name === 'open-api')).toBe(true);
     expect(json.paths?.['/health']).toBeTruthy();
+    expect(json.paths?.['/open-api/products/']?.get?.summary).toBe('列出可售充值商品');
+    expect(json.paths?.['/open-api/products/']?.get?.tags).toContain('open-api');
   });
 });

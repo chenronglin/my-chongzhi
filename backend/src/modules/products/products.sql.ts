@@ -2,16 +2,16 @@ export const productsSql = {
   listProducts: `
     SELECT
       id,
-      category_id AS "categoryId",
+      product_code AS "productCode",
       product_name AS "productName",
-      product_type AS "productType",
-      delivery_type AS "deliveryType",
-      target_type AS "targetType",
+      carrier_code AS "carrierCode",
+      province_name AS "provinceName",
+      face_value AS "faceValue",
+      recharge_mode AS "productType",
+      sales_unit AS "salesUnit",
       status,
-      valid_from AS "validFrom",
-      valid_to AS "validTo",
-      base_attributes_json AS "baseAttributesJson"
-    FROM product.products
-    ORDER BY created_at DESC
+    FROM product.recharge_products
+    WHERE status = 'ACTIVE'
+    ORDER BY face_value ASC, created_at DESC
   `,
 } as const;
