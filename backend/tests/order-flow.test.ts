@@ -1,9 +1,10 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 
 import { buildApp } from '@/app';
 import { buildOpenApiCanonicalString, signOpenApiPayload } from '@/lib/security';
 import { db } from '@/lib/sql';
 import { stableStringify } from '@/lib/utils';
+import { resetTestState } from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -72,41 +73,14 @@ async function getOrderEventSources(orderNo: string, eventType: string) {
   `;
 }
 
-async function ensurePlatformBalance(minBalance: number) {
-  const rows = await db<
-    {
-      availableBalance: number;
-    }[]
-  >`
-    SELECT available_balance AS "availableBalance"
-    FROM ledger.accounts
-    WHERE owner_type = 'PLATFORM'
-      AND owner_id = 'SYSTEM'
-    LIMIT 1
-  `;
-
-  const platformAccount = rows[0];
-
-  expect(platformAccount).toBeTruthy();
-
-  if (Number(platformAccount?.availableBalance ?? 0) >= minBalance) {
-    return;
-  }
-
-  await db`
-    UPDATE ledger.accounts
-    SET
-      available_balance = ${minBalance},
-      updated_at = NOW()
-    WHERE owner_type = 'PLATFORM'
-      AND owner_id = 'SYSTEM'
-  `;
-}
-
 beforeAll(async () => {
   runtime = await buildApp({
     startWorkerScheduler: false,
   });
+});
+
+beforeEach(async () => {
+  await resetTestState();
 });
 
 afterAll(() => {
@@ -200,10 +174,6 @@ describe('主交易链路', () => {
     expect(json.data.orderNo).toBeTruthy();
 
     const orderNo = String(json.data.orderNo);
-    const createdOrder = await runtime.services.orders.getOrderByNo(orderNo);
-
-    await ensurePlatformBalance(Number(createdOrder.salePrice) + 100);
-
     await runtime.services.worker.processReadyJobs();
     await Bun.sleep(1100);
     await runtime.services.worker.processReadyJobs();
@@ -220,5 +190,57 @@ describe('主交易链路', () => {
     expect(refundEvents[0]).toMatchObject({
       sourceService: 'ledger',
     });
+  });
+
+  test('重复支付通知不会重复记账或重复写入支付成功事件', async () => {
+    const skuRows = await db.unsafe<{ id: string }[]>(
+      'SELECT id FROM product.product_skus ORDER BY created_at ASC LIMIT 1',
+    );
+    const skuId = skuRows[0]?.id;
+
+    expect(skuId).toBeTruthy();
+
+    const createBody = {
+      channelOrderNo: `online-${Date.now()}`,
+      skuId,
+      paymentMode: 'ONLINE',
+    };
+    const createResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders('/open-api/orders', createBody),
+        body: JSON.stringify(createBody),
+      }),
+    );
+    const createJson = await readResponseJson(createResponse);
+    const orderNo = String(createJson.data.orderNo);
+    const token = await runtime.issueInternalToken();
+    const paymentNo = `gateway-${Date.now()}`;
+
+    await Promise.all(
+      [1, 2].map(() =>
+        runtime.app.handle(
+          new Request(`http://localhost/internal/orders/${orderNo}/payment-events`, {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              status: 'SUCCESS',
+              paymentNo,
+              paymentMode: 'ONLINE',
+              paidAmount: 100,
+            }),
+          }),
+        ),
+      ),
+    );
+
+    const ledgerEntries = await getOrderLedgerEntries(orderNo);
+    const paymentEvents = await getOrderEventSources(orderNo, 'PaymentSucceeded');
+
+    expect(ledgerEntries.filter((entry) => entry.actionType === 'ONLINE_PAYMENT')).toHaveLength(1);
+    expect(paymentEvents).toHaveLength(1);
   });
 });

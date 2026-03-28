@@ -93,7 +93,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   eventBus.subscribe('SupplierAccepted', (payload) =>
     ordersModule.service.handleSupplierAccepted(payload),
   );
-  eventBus.subscribe('SupplierSucceeded', (payload) => ordersModule.service.handleSupplierSucceeded(payload));
+  eventBus.subscribe('SupplierSucceeded', (payload) =>
+    ordersModule.service.handleSupplierSucceeded(payload),
+  );
   eventBus.subscribe('SupplierFailed', (payload) =>
     ordersModule.service.handleSupplierFailed(payload),
   );

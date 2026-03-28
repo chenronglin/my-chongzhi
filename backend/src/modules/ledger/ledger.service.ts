@@ -1,5 +1,5 @@
-import { generateBusinessNo } from '@/lib/id';
 import { notFound } from '@/lib/errors';
+import { generateBusinessNo } from '@/lib/id';
 import type { LedgerContract } from '@/modules/ledger/contracts';
 import type { LedgerRepository } from '@/modules/ledger/ledger.repository';
 import type { OrderContract } from '@/modules/orders/contracts';
@@ -37,7 +37,10 @@ export class LedgerService implements LedgerContract {
     orderNo: string;
     amount: number;
   }): Promise<{ referenceNo: string }> {
-    const existing = await this.repository.findLedgerByOrderAction(input.orderNo, 'BALANCE_PAYMENT');
+    const existing = await this.repository.findLedgerByOrderAction(
+      input.orderNo,
+      'BALANCE_PAYMENT',
+    );
 
     if (existing) {
       return {

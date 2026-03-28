@@ -5,6 +5,10 @@ import { ordersSql } from '@/modules/orders/orders.sql';
 import type { MainOrderStatus, OrderEventRecord, OrderRecord } from '@/modules/orders/orders.types';
 
 export class OrdersRepository {
+  private async lockOrderEventMutation(tx: typeof db, key: string): Promise<void> {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  }
+
   private mapOrder(row: OrderRecord): OrderRecord {
     return {
       ...row,
@@ -291,37 +295,51 @@ export class OrdersRepository {
     operator: string;
     requestId: string;
   }): Promise<void> {
-    await db`
-      INSERT INTO ordering.order_events (
-        id,
-        order_no,
-        event_type,
-        source_service,
-        source_no,
-        before_status_json,
-        after_status_json,
-        payload_json,
-        idempotency_key,
-        operator,
-        request_id,
-        occurred_at
-      )
-      VALUES (
-        ${generateId()},
-        ${input.orderNo},
-        ${input.eventType},
-        ${input.sourceService},
-        ${input.sourceNo ?? null},
-        ${JSON.stringify(input.beforeStatusJson)},
-        ${JSON.stringify(input.afterStatusJson)},
-        ${JSON.stringify(input.payloadJson)},
-        ${input.idempotencyKey},
-        ${input.operator},
-        ${input.requestId},
-        NOW()
-      )
-      ON CONFLICT DO NOTHING
-    `;
+    await db.begin(async (tx) => {
+      await this.lockOrderEventMutation(tx, `order-event:${input.idempotencyKey}`);
+
+      const existing = await first<{ id: string }>(tx<{ id: string }[]>`
+        SELECT id
+        FROM ordering.order_events
+        WHERE idempotency_key = ${input.idempotencyKey}
+        LIMIT 1
+      `);
+
+      if (existing) {
+        return;
+      }
+
+      await tx`
+        INSERT INTO ordering.order_events (
+          id,
+          order_no,
+          event_type,
+          source_service,
+          source_no,
+          before_status_json,
+          after_status_json,
+          payload_json,
+          idempotency_key,
+          operator,
+          request_id,
+          occurred_at
+        )
+        VALUES (
+          ${generateId()},
+          ${input.orderNo},
+          ${input.eventType},
+          ${input.sourceService},
+          ${input.sourceNo ?? null},
+          ${JSON.stringify(input.beforeStatusJson)},
+          ${JSON.stringify(input.afterStatusJson)},
+          ${JSON.stringify(input.payloadJson)},
+          ${input.idempotencyKey},
+          ${input.operator},
+          ${input.requestId},
+          NOW()
+        )
+      `;
+    });
   }
 
   async listEvents(orderNo: string): Promise<OrderEventRecord[]> {
