@@ -26,9 +26,11 @@ export async function resetTestState() {
       notification.notification_delivery_logs,
       notification.notification_dead_letters,
       notification.notification_tasks,
+      supplier.supplier_reconcile_diffs,
       supplier.supplier_callback_logs,
       supplier.supplier_request_logs,
       supplier.supplier_orders,
+      product.product_sync_logs,
       ordering.order_events,
       ordering.orders,
       ledger.account_ledgers

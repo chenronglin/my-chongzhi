@@ -150,6 +150,10 @@ CREATE TABLE product.recharge_products (
   face_value NUMERIC(18, 2) NOT NULL,
   recharge_mode TEXT NOT NULL,
   sales_unit TEXT NOT NULL DEFAULT 'CNY',
+  sales_status TEXT NOT NULL DEFAULT 'ON_SALE',
+  purchase_price NUMERIC(18, 2) NOT NULL DEFAULT 0,
+  inventory_quantity INTEGER NOT NULL DEFAULT 0,
+  dynamic_updated_at TIMESTAMPTZ,
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

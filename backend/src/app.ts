@@ -80,12 +80,41 @@ export async function buildApp(options: BuildAppOptions = {}) {
   });
 
   // 统一注册 Worker 处理器。
+  workerModule.service.registerHandler('supplier.catalog.full-sync', (payload) =>
+    suppliersModule.service.syncFullCatalog({
+      supplierCode: String(payload.supplierCode ?? ''),
+      items: Array.isArray(payload.items) ? (payload.items as any[]) : [],
+    }),
+  );
+  workerModule.service.registerHandler('supplier.catalog.delta-sync', (payload) =>
+    suppliersModule.service.syncDynamicCatalog({
+      supplierCode: String(payload.supplierCode ?? ''),
+      items: Array.isArray(payload.items) ? (payload.items as any[]) : [],
+    }),
+  );
   workerModule.service.registerHandler('supplier.submit', (payload) =>
-    suppliersModule.service.handleSupplierSubmitJob(payload),
+    suppliersModule.service.submitOrder({
+      orderNo: String(payload.orderNo ?? ''),
+    }),
   );
   workerModule.service.registerHandler('supplier.query', (payload) =>
-    suppliersModule.service.handleSupplierQueryJob(payload),
+    suppliersModule.service.queryOrder({
+      orderNo: String(payload.orderNo ?? ''),
+      supplierOrderNo: String(payload.supplierOrderNo ?? ''),
+      attemptIndex: Number(payload.attemptIndex ?? 0),
+    }),
   );
+  workerModule.service.registerHandler('supplier.reconcile.inflight', () =>
+    suppliersModule.service.runInflightReconcile(),
+  );
+  workerModule.service.registerHandler('supplier.reconcile.daily', (payload) =>
+    suppliersModule.service.runDailyReconcile({
+      reconcileDate: typeof payload.reconcileDate === 'string' ? payload.reconcileDate : undefined,
+    }),
+  );
+  workerModule.service.registerHandler('order.timeout.scan', async () => {
+    // Task 5 only needs the scheduler registration restored. Timeout handling stays in orders.
+  });
   workerModule.service.registerHandler('notification.deliver', (payload) =>
     notificationsModule.service.handleDeliverJob(payload),
   );

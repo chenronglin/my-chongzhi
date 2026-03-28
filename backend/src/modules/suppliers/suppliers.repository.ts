@@ -1,10 +1,61 @@
 import { generateBusinessNo, generateId } from '@/lib/id';
 import { encryptText } from '@/lib/security';
-import { db, first } from '@/lib/sql';
+import { db, first, many } from '@/lib/sql';
+import { parseJsonValue } from '@/lib/utils';
 import { suppliersSql } from '@/modules/suppliers/suppliers.sql';
-import type { Supplier, SupplierOrder } from '@/modules/suppliers/suppliers.types';
+import type {
+  Supplier,
+  SupplierCatalogItem,
+  SupplierDynamicItem,
+  SupplierOrder,
+  SupplierReconcileCandidate,
+  SupplierReconcileDiff,
+  SupplierSyncLog,
+} from '@/modules/suppliers/suppliers.types';
+
+interface ProductRecord {
+  id: string;
+  productCode: string;
+}
+
+interface ReconcileCandidateRow {
+  orderNo: string;
+  supplierId: string;
+  supplierOrderNo: string;
+  platformMainStatus: string;
+  platformSupplierStatus: string;
+  refundStatus: string;
+  supplierOrderStatus: string;
+  purchasePrice: string | number;
+  orderCreatedAt: string;
+  orderUpdatedAt: string;
+}
 
 export class SuppliersRepository {
+  private mapSyncLog(row: SupplierSyncLog): SupplierSyncLog {
+    return {
+      ...row,
+      requestPayloadJson: parseJsonValue(row.requestPayloadJson, {}),
+      responsePayloadJson: parseJsonValue(row.responsePayloadJson, {}),
+    };
+  }
+
+  private mapReconcileDiff(row: SupplierReconcileDiff): SupplierReconcileDiff {
+    return {
+      ...row,
+      diffAmount: Number(row.diffAmount),
+      detailsJson: parseJsonValue(row.detailsJson, {}),
+    };
+  }
+
+  private mapSupplierOrder(row: SupplierOrder): SupplierOrder {
+    return {
+      ...row,
+      requestPayloadJson: parseJsonValue(row.requestPayloadJson, {}),
+      responsePayloadJson: parseJsonValue(row.responsePayloadJson, {}),
+    };
+  }
+
   async listSuppliers(): Promise<Supplier[]> {
     return db.unsafe<Supplier[]>(suppliersSql.listSuppliers);
   }
@@ -116,8 +167,197 @@ export class SuppliersRepository {
     `);
   }
 
+  async upsertRechargeProduct(item: SupplierCatalogItem): Promise<ProductRecord> {
+    const rows = await db<ProductRecord[]>`
+      INSERT INTO product.recharge_products (
+        id,
+        product_code,
+        product_name,
+        carrier_code,
+        province_name,
+        face_value,
+        recharge_mode,
+        sales_unit,
+        sales_status,
+        purchase_price,
+        inventory_quantity,
+        dynamic_updated_at,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${generateId()},
+        ${item.productCode},
+        ${item.productName},
+        ${item.carrierCode},
+        ${item.provinceName},
+        ${item.faceValue},
+        ${item.rechargeMode},
+        ${item.salesUnit ?? 'CNY'},
+        ${item.salesStatus ?? 'ON_SALE'},
+        ${item.purchasePrice},
+        ${item.inventoryQuantity},
+        NOW(),
+        ${item.status ?? 'ACTIVE'},
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (product_code) DO UPDATE
+      SET
+        product_name = EXCLUDED.product_name,
+        carrier_code = EXCLUDED.carrier_code,
+        province_name = EXCLUDED.province_name,
+        face_value = EXCLUDED.face_value,
+        recharge_mode = EXCLUDED.recharge_mode,
+        sales_unit = EXCLUDED.sales_unit,
+        sales_status = EXCLUDED.sales_status,
+        purchase_price = EXCLUDED.purchase_price,
+        inventory_quantity = EXCLUDED.inventory_quantity,
+        dynamic_updated_at = EXCLUDED.dynamic_updated_at,
+        status = EXCLUDED.status,
+        updated_at = NOW()
+      RETURNING id, product_code AS "productCode"
+    `;
+
+    const product = rows[0];
+
+    if (!product) {
+      throw new Error(`同步商品失败: ${item.productCode}`);
+    }
+
+    return product;
+  }
+
+  async updateDynamicCatalogItem(input: {
+    supplierId: string;
+    item: SupplierDynamicItem;
+  }): Promise<ProductRecord | null> {
+    const rows = await db<ProductRecord[]>`
+      UPDATE product.recharge_products AS rp
+      SET
+        sales_status = ${input.item.salesStatus},
+        purchase_price = ${input.item.purchasePrice},
+        inventory_quantity = ${input.item.inventoryQuantity},
+        dynamic_updated_at = NOW(),
+        updated_at = NOW()
+      FROM product.product_supplier_mappings AS psm
+      WHERE rp.id = psm.product_id
+        AND psm.supplier_id = ${input.supplierId}
+        AND rp.product_code = ${input.item.productCode}
+      RETURNING rp.id, rp.product_code AS "productCode"
+    `;
+
+    const product = rows[0] ?? null;
+
+    if (product) {
+      await db`
+        UPDATE product.product_supplier_mappings
+        SET
+          cost_price = ${input.item.purchasePrice},
+          updated_at = NOW()
+        WHERE product_id = ${product.id}
+          AND supplier_id = ${input.supplierId}
+      `;
+    }
+
+    return product;
+  }
+
+  async upsertProductSupplierMapping(input: {
+    productId: string;
+    supplierId: string;
+    item: SupplierCatalogItem;
+  }): Promise<void> {
+    await db`
+      INSERT INTO product.product_supplier_mappings (
+        id,
+        product_id,
+        supplier_id,
+        supplier_product_code,
+        route_type,
+        priority,
+        cost_price,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${generateId()},
+        ${input.productId},
+        ${input.supplierId},
+        ${input.item.supplierProductCode},
+        ${input.item.routeType ?? 'PRIMARY'},
+        ${input.item.priority ?? 1},
+        ${input.item.purchasePrice},
+        ${input.item.mappingStatus ?? 'ACTIVE'},
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (product_id, supplier_id) DO UPDATE
+      SET
+        supplier_product_code = EXCLUDED.supplier_product_code,
+        route_type = EXCLUDED.route_type,
+        priority = EXCLUDED.priority,
+        cost_price = EXCLUDED.cost_price,
+        status = EXCLUDED.status,
+        updated_at = NOW()
+    `;
+  }
+
+  async addProductSyncLog(input: {
+    supplierId: string;
+    syncType: string;
+    status: string;
+    requestPayloadJson: Record<string, unknown>;
+    responsePayloadJson: Record<string, unknown>;
+    errorMessage?: string | null;
+  }): Promise<SupplierSyncLog> {
+    const rows = await db<SupplierSyncLog[]>`
+      INSERT INTO product.product_sync_logs (
+        id,
+        supplier_id,
+        sync_type,
+        status,
+        request_payload_json,
+        response_payload_json,
+        error_message,
+        synced_at,
+        created_at
+      )
+      VALUES (
+        ${generateId()},
+        ${input.supplierId},
+        ${input.syncType},
+        ${input.status},
+        ${JSON.stringify(input.requestPayloadJson)},
+        ${JSON.stringify(input.responsePayloadJson)},
+        ${input.errorMessage ?? null},
+        NOW(),
+        NOW()
+      )
+      RETURNING
+        id,
+        supplier_id AS "supplierId",
+        sync_type AS "syncType",
+        status,
+        request_payload_json AS "requestPayloadJson",
+        response_payload_json AS "responsePayloadJson",
+        error_message AS "errorMessage",
+        synced_at AS "syncedAt"
+    `;
+
+    const log = rows[0];
+
+    if (!log) {
+      throw new Error('记录供应商同步日志失败');
+    }
+
+    return this.mapSyncLog(log);
+  }
+
   async findSupplierOrderByOrderNo(orderNo: string): Promise<SupplierOrder | null> {
-    return first<SupplierOrder>(db<SupplierOrder[]>`
+    const row = await first<SupplierOrder>(db<SupplierOrder[]>`
       SELECT
         id,
         order_no AS "orderNo",
@@ -133,10 +373,12 @@ export class SuppliersRepository {
       ORDER BY created_at DESC
       LIMIT 1
     `);
+
+    return row ? this.mapSupplierOrder(row) : null;
   }
 
   async findSupplierOrderBySupplierOrderNo(supplierOrderNo: string): Promise<SupplierOrder | null> {
-    return first<SupplierOrder>(db<SupplierOrder[]>`
+    const row = await first<SupplierOrder>(db<SupplierOrder[]>`
       SELECT
         id,
         order_no AS "orderNo",
@@ -151,6 +393,8 @@ export class SuppliersRepository {
       WHERE supplier_order_no = ${supplierOrderNo}
       LIMIT 1
     `);
+
+    return row ? this.mapSupplierOrder(row) : null;
   }
 
   async createSupplierOrder(input: {
@@ -205,7 +449,7 @@ export class SuppliersRepository {
       throw new Error('创建供应商订单失败');
     }
 
-    return supplierOrder;
+    return this.mapSupplierOrder(supplierOrder);
   }
 
   async updateSupplierOrderStatus(
@@ -257,5 +501,154 @@ export class SuppliersRepository {
         NOW()
       )
     `;
+  }
+
+  async listReconcileCandidates(input: {
+    reconcileDate: string;
+    onlyInflight: boolean;
+  }): Promise<SupplierReconcileCandidate[]> {
+    const rows = await many<ReconcileCandidateRow>(db<ReconcileCandidateRow[]>`
+      SELECT
+        o.order_no AS "orderNo",
+        so.supplier_id AS "supplierId",
+        so.supplier_order_no AS "supplierOrderNo",
+        o.main_status AS "platformMainStatus",
+        o.supplier_status AS "platformSupplierStatus",
+        o.refund_status AS "refundStatus",
+        so.standard_status AS "supplierOrderStatus",
+        o.cost_price AS "purchasePrice",
+        o.created_at AS "orderCreatedAt",
+        o.updated_at AS "orderUpdatedAt"
+      FROM ordering.orders AS o
+      INNER JOIN supplier.supplier_orders AS so
+        ON so.order_no = o.order_no
+      WHERE (
+        ${input.onlyInflight}
+        AND (
+          o.main_status IN ('CREATED', 'PROCESSING', 'REFUNDING')
+          OR o.refund_status = 'PENDING'
+        )
+      ) OR (
+        NOT ${input.onlyInflight}
+        AND o.created_at::date = ${input.reconcileDate}::date
+      )
+      ORDER BY o.created_at ASC, o.order_no ASC
+    `);
+
+    return rows.map((row) => ({
+      ...row,
+      purchasePrice: Number(row.purchasePrice),
+    }));
+  }
+
+  async findReconcileDiff(input: {
+    supplierId: string;
+    reconcileDate: string;
+    orderNo: string | null;
+    diffType: string;
+  }): Promise<SupplierReconcileDiff | null> {
+    const row = await first<SupplierReconcileDiff>(db<SupplierReconcileDiff[]>`
+      SELECT
+        id,
+        supplier_id AS "supplierId",
+        reconcile_date::text AS "reconcileDate",
+        order_no AS "orderNo",
+        diff_type AS "diffType",
+        diff_amount AS "diffAmount",
+        details_json AS "detailsJson",
+        status,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM supplier.supplier_reconcile_diffs
+      WHERE supplier_id = ${input.supplierId}
+        AND reconcile_date = ${input.reconcileDate}::date
+        AND order_no IS NOT DISTINCT FROM ${input.orderNo}
+        AND diff_type = ${input.diffType}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+
+    return row ? this.mapReconcileDiff(row) : null;
+  }
+
+  async createReconcileDiff(input: {
+    supplierId: string;
+    reconcileDate: string;
+    orderNo: string | null;
+    diffType: string;
+    diffAmount: number;
+    detailsJson: Record<string, unknown>;
+    status?: string;
+  }): Promise<SupplierReconcileDiff> {
+    const rows = await db<SupplierReconcileDiff[]>`
+      INSERT INTO supplier.supplier_reconcile_diffs (
+        id,
+        supplier_id,
+        reconcile_date,
+        order_no,
+        diff_type,
+        diff_amount,
+        details_json,
+        status,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        ${generateId()},
+        ${input.supplierId},
+        ${input.reconcileDate}::date,
+        ${input.orderNo},
+        ${input.diffType},
+        ${input.diffAmount},
+        ${JSON.stringify(input.detailsJson)},
+        ${input.status ?? 'OPEN'},
+        NOW(),
+        NOW()
+      )
+      RETURNING
+        id,
+        supplier_id AS "supplierId",
+        reconcile_date::text AS "reconcileDate",
+        order_no AS "orderNo",
+        diff_type AS "diffType",
+        diff_amount AS "diffAmount",
+        details_json AS "detailsJson",
+        status,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+    `;
+
+    const diff = rows[0];
+
+    if (!diff) {
+      throw new Error('创建供应商对账差异失败');
+    }
+
+    return this.mapReconcileDiff(diff);
+  }
+
+  async listReconcileDiffs(input?: {
+    reconcileDate?: string;
+    orderNo?: string;
+  }): Promise<SupplierReconcileDiff[]> {
+    const rows = await many<SupplierReconcileDiff>(db<SupplierReconcileDiff[]>`
+      SELECT
+        id,
+        supplier_id AS "supplierId",
+        reconcile_date::text AS "reconcileDate",
+        order_no AS "orderNo",
+        diff_type AS "diffType",
+        diff_amount AS "diffAmount",
+        details_json AS "detailsJson",
+        status,
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM supplier.supplier_reconcile_diffs
+      WHERE (${input?.reconcileDate ?? null}::date IS NULL OR reconcile_date = ${input?.reconcileDate ?? null}::date)
+        AND (${input?.orderNo ?? null} IS NULL OR order_no = ${input?.orderNo ?? null})
+      ORDER BY created_at ASC, id ASC
+    `);
+
+    return rows.map((row) => this.mapReconcileDiff(row));
   }
 }

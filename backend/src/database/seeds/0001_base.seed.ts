@@ -270,6 +270,10 @@ export async function runSeed(db: SQL): Promise<void> {
         face_value,
         recharge_mode,
         sales_unit,
+        sales_status,
+        purchase_price,
+        inventory_quantity,
+        dynamic_updated_at,
         status
       )
       VALUES
@@ -282,6 +286,10 @@ export async function runSeed(db: SQL): Promise<void> {
           50,
           'MIXED',
           'CNY',
+          'ON_SALE',
+          48,
+          100,
+          NOW(),
           'ACTIVE'
         ),
         (
@@ -293,6 +301,10 @@ export async function runSeed(db: SQL): Promise<void> {
           100,
           'FAST',
           'CNY',
+          'ON_SALE',
+          96,
+          100,
+          NOW(),
           'ACTIVE'
         )
       ON CONFLICT (product_code) DO UPDATE
@@ -303,6 +315,10 @@ export async function runSeed(db: SQL): Promise<void> {
         face_value = EXCLUDED.face_value,
         recharge_mode = EXCLUDED.recharge_mode,
         sales_unit = EXCLUDED.sales_unit,
+        sales_status = EXCLUDED.sales_status,
+        purchase_price = EXCLUDED.purchase_price,
+        inventory_quantity = EXCLUDED.inventory_quantity,
+        dynamic_updated_at = EXCLUDED.dynamic_updated_at,
         status = EXCLUDED.status,
         updated_at = NOW()
     `;

@@ -142,6 +142,29 @@ export class WorkerRepository {
     };
   }
 
+  async listByJobType(jobType: string, limit = 20): Promise<WorkerJob[]> {
+    const rows = await many<WorkerJob>(db<WorkerJob[]>`
+      SELECT
+        id,
+        job_type AS "jobType",
+        business_key AS "businessKey",
+        payload_json AS "payloadJson",
+        status,
+        attempt_count AS "attemptCount",
+        max_attempts AS "maxAttempts",
+        next_run_at AS "nextRunAt",
+        last_error AS "lastError",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM worker.worker_jobs
+      WHERE job_type = ${jobType}
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `);
+
+    return rows.map((row) => this.mapJob(row));
+  }
+
   async getById(jobId: string): Promise<WorkerJob | null> {
     const row = await first<WorkerJob>(db<WorkerJob[]>`
       SELECT
