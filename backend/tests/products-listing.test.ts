@@ -4,6 +4,7 @@ import { buildApp } from '@/app';
 import { runSeed } from '@/database/seeds/0001_base.seed';
 import { buildOpenApiCanonicalString, signOpenApiPayload } from '@/lib/security';
 import { db } from '@/lib/sql';
+import { acquireIntegrationTestLock, releaseIntegrationTestLock } from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -48,6 +49,7 @@ async function resetProductsState() {
 }
 
 beforeAll(async () => {
+  await acquireIntegrationTestLock();
   runtime = await buildApp({ startWorkerScheduler: false });
 });
 
@@ -56,7 +58,8 @@ beforeEach(async () => {
 });
 
 afterAll(() => {
-  runtime.stop();
+  runtime?.stop();
+  return releaseIntegrationTestLock();
 });
 
 describe('充值商品列表', () => {

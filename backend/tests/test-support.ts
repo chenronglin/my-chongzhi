@@ -1,5 +1,32 @@
+import { mkdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { runSeed } from '@/database/seeds/0001_base.seed';
 import { db } from '@/lib/sql';
+
+const testLockDir = join(process.env.TMPDIR ?? '/tmp', 'docs-backend-integration-test.lock');
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function acquireIntegrationTestLock() {
+  for (;;) {
+    try {
+      await mkdir(testLockDir);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+
+      await sleep(50);
+    }
+  }
+}
+
+export async function releaseIntegrationTestLock() {
+  await rm(testLockDir, { recursive: true, force: true });
+}
 
 export async function resetTestState() {
   await db.unsafe(`

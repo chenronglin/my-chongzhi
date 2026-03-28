@@ -4,7 +4,12 @@ import { buildApp } from '@/app';
 import { buildOpenApiCanonicalString, signOpenApiPayload } from '@/lib/security';
 import { db } from '@/lib/sql';
 import { stableStringify } from '@/lib/utils';
-import { forceWorkerJobsReady, resetTestState } from './test-support';
+import {
+  acquireIntegrationTestLock,
+  forceWorkerJobsReady,
+  releaseIntegrationTestLock,
+  resetTestState,
+} from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -124,6 +129,7 @@ async function processWorkerRound() {
 }
 
 beforeAll(async () => {
+  await acquireIntegrationTestLock();
   runtime = await buildApp({
     startWorkerScheduler: false,
   });
@@ -134,7 +140,8 @@ beforeEach(async () => {
 });
 
 afterAll(() => {
-  runtime.stop();
+  runtime?.stop();
+  return releaseIntegrationTestLock();
 });
 
 describe.skip('主交易链路（旧 sku/payment 模型，已由 order-flow-v1 覆盖）', () => {

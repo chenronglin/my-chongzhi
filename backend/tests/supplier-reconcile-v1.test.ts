@@ -6,7 +6,11 @@ import { runSeed } from '@/database/seeds/0001_base.seed';
 import { buildOpenApiCanonicalString, signOpenApiPayload } from '@/lib/security';
 import { db, executeFile } from '@/lib/sql';
 import { stableStringify } from '@/lib/utils';
-import { resetTestState } from './test-support';
+import {
+  acquireIntegrationTestLock,
+  releaseIntegrationTestLock,
+  resetTestState,
+} from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -86,6 +90,7 @@ async function processWorkerRound() {
 }
 
 beforeAll(async () => {
+  await acquireIntegrationTestLock();
   await rebuildManagedSchemas();
   await runSeed(db);
   runtime = await buildApp({
@@ -98,7 +103,8 @@ beforeEach(async () => {
 });
 
 afterAll(() => {
-  runtime.stop();
+  runtime?.stop();
+  return releaseIntegrationTestLock();
 });
 
 test('日对账任务会持久化平台退款但供应商成功的差异', async () => {

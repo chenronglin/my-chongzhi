@@ -7,6 +7,7 @@ import { buildOpenApiCanonicalString, encryptText, signOpenApiPayload } from '@/
 import { db, executeFile } from '@/lib/sql';
 import { stableStringify } from '@/lib/utils';
 import { OrdersRepository } from '@/modules/orders/orders.repository';
+import { acquireIntegrationTestLock, releaseIntegrationTestLock } from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 const migrationFile = join(import.meta.dir, '../src/database/migrations/0001_init_schemas.sql');
@@ -269,6 +270,7 @@ async function processWorkerRound() {
 }
 
 beforeAll(async () => {
+  await acquireIntegrationTestLock();
   await rebuildManagedSchemas();
   await runSeed(db);
   await seedSecondChannel();
@@ -282,7 +284,8 @@ beforeEach(async () => {
 });
 
 afterAll(() => {
-  runtime.stop();
+  runtime?.stop();
+  return releaseIntegrationTestLock();
 });
 
 describe.serial('V1 ISP 充值下单链路', () => {

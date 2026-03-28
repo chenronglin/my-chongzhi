@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { buildApp } from '@/app';
 import { runSeed } from '@/database/seeds/0001_base.seed';
 import { db, executeFile } from '@/lib/sql';
+import { acquireIntegrationTestLock, releaseIntegrationTestLock } from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -76,12 +77,14 @@ async function rebuildManagedSchemas() {
 }
 
 beforeAll(async () => {
+  await acquireIntegrationTestLock();
   await rebuildManagedSchemas();
   runtime = await buildApp({ startWorkerScheduler: false });
 });
 
 afterAll(() => {
-  runtime.stop();
+  runtime?.stop();
+  return releaseIntegrationTestLock();
 });
 
 describe('ISP 充值商品匹配', () => {

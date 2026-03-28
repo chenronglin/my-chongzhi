@@ -1,8 +1,9 @@
-import { expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { join } from 'node:path';
 
 import { runSeed } from '@/database/seeds/0001_base.seed';
 import { db, executeFile } from '@/lib/sql';
+import { acquireIntegrationTestLock, releaseIntegrationTestLock } from './test-support';
 
 const managedSchemas = [
   'iam',
@@ -66,6 +67,12 @@ async function rebuildManagedSchemas() {
 
   await executeFile(migrationFile);
 }
+
+beforeAll(async () => {
+  await acquireIntegrationTestLock();
+});
+
+afterAll(() => releaseIntegrationTestLock());
 
 test('数据库应只重建 ISP 充值 V1 所需核心表', async () => {
   await rebuildManagedSchemas();

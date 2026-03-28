@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { buildApp } from '@/app';
 import { runSeed } from '@/database/seeds/0001_base.seed';
 import { db, executeFile } from '@/lib/sql';
-import { resetTestState } from './test-support';
+import {
+  acquireIntegrationTestLock,
+  releaseIntegrationTestLock,
+  resetTestState,
+} from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -36,6 +40,7 @@ function normalizeJsonLike(input: unknown) {
 }
 
 beforeAll(async () => {
+  await acquireIntegrationTestLock();
   await rebuildManagedSchemas();
   await runSeed(db);
   runtime = await buildApp({
@@ -48,7 +53,8 @@ beforeEach(async () => {
 });
 
 afterAll(() => {
-  runtime.stop();
+  runtime?.stop();
+  return releaseIntegrationTestLock();
 });
 
 test('动态目录同步会刷新商品价格库存并记录同步日志', async () => {
