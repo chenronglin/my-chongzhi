@@ -102,45 +102,49 @@ async function processWorkerRound() {
   await runtime.services.worker.processReadyJobs();
 }
 
-async function createFastOrder() {
-  const body = {
-    channelOrderNo: `itest-timeout-${Date.now()}`,
-    mobile: '13800130000',
-    faceValue: 100,
-    product_type: 'FAST',
-  };
+async function withFixedNow<T>(iso: string, run: () => Promise<T>) {
+  const originalNow = Date.now;
+  const fixedMs = new Date(iso).getTime();
 
-  const response = await runtime.app.handle(
-    new Request('http://localhost/open-api/orders', {
-      method: 'POST',
-      headers: buildSignedHeaders({
-        path: '/open-api/orders',
-        body,
-      }),
-      body: JSON.stringify(body),
-    }),
-  );
-  const json = await readResponseJson(response);
+  Date.now = () => fixedMs;
 
-  expect(response.status).toBe(200);
-  expect(json.code).toBe(0);
-
-  return String(json.data.orderNo);
+  try {
+    return await run();
+  } finally {
+    Date.now = originalNow;
+  }
 }
 
-async function setOrderDeadlines(input: {
-  orderNo: string;
-  warningDeadlineAt: Date;
-  expireDeadlineAt: Date;
+async function createOrder(input: {
+  nowIso: string;
+  productType: 'FAST' | 'MIXED';
+  faceValue: number;
 }) {
-  await db`
-    UPDATE ordering.orders
-    SET
-      warning_deadline_at = ${input.warningDeadlineAt},
-      expire_deadline_at = ${input.expireDeadlineAt},
-      updated_at = NOW()
-    WHERE order_no = ${input.orderNo}
-  `;
+  return withFixedNow(input.nowIso, async () => {
+    const body = {
+      channelOrderNo: `itest-timeout-${input.productType.toLowerCase()}-${Date.now()}`,
+      mobile: '13800130000',
+      faceValue: input.faceValue,
+      product_type: input.productType,
+    };
+
+    const response = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders({
+          path: '/open-api/orders',
+          body,
+        }),
+        body: JSON.stringify(body),
+      }),
+    );
+    const json = await readResponseJson(response);
+
+    expect(response.status).toBe(200);
+    expect(json.code).toBe(0);
+
+    return String(json.data.orderNo);
+  });
 }
 
 async function removeSupplierSubmitJob(orderNo: string) {
@@ -200,6 +204,16 @@ async function listNotificationTasks(orderNo: string) {
   });
 }
 
+async function countNotificationTasks(orderNo: string) {
+  const rows = await db<{ count: number }[]>`
+    SELECT COUNT(*)::int AS count
+    FROM notification.notification_tasks
+    WHERE order_no = ${orderNo}
+  `;
+
+  return rows[0]?.count ?? 0;
+}
+
 async function getOrderLedgerActions(orderNo: string) {
   return db<{ actionType: string }[]>`
     SELECT
@@ -208,6 +222,11 @@ async function getOrderLedgerActions(orderNo: string) {
     WHERE order_no = ${orderNo}
     ORDER BY created_at ASC, id ASC
   `;
+}
+
+function expectDeadlineIso(actual: string | null, expectedIso: string) {
+  expect(actual).toBeTruthy();
+  expect(new Date(String(actual)).toISOString()).toBe(expectedIso);
 }
 
 beforeAll(async () => {
@@ -227,20 +246,83 @@ afterAll(() => {
 });
 
 describe.serial('V1 订单超时扫描', () => {
-  test('FAST 订单超时后会先进入预警，再退款并仅创建终态 WEBHOOK 通知', async () => {
-    const orderNo = await createFastOrder();
+  test('FAST 订单创建时会派生 10 分钟预警和 1 小时过期 SLA', async () => {
+    const createdAtIso = '2026-03-28T09:00:00.000Z';
+    const orderNo = await createOrder({
+      nowIso: createdAtIso,
+      productType: 'FAST',
+      faceValue: 100,
+    });
+
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expectDeadlineIso(order.warningDeadlineAt, '2026-03-28T09:10:00.000Z');
+    expectDeadlineIso(order.expireDeadlineAt, '2026-03-28T10:00:00.000Z');
+  });
+
+  test('MIXED 订单创建时会派生 2.5 小时预警和 3 小时过期 SLA', async () => {
+    const createdAtIso = '2026-03-28T09:00:00.000Z';
+    const orderNo = await createOrder({
+      nowIso: createdAtIso,
+      productType: 'MIXED',
+      faceValue: 50,
+    });
+
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expectDeadlineIso(order.warningDeadlineAt, '2026-03-28T11:30:00.000Z');
+    expectDeadlineIso(order.expireDeadlineAt, '2026-03-28T12:00:00.000Z');
+  });
+
+  test('非终态订单不会创建终态 WEBHOOK 通知，V1 也不暴露内部手工通知入口', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'MIXED',
+      faceValue: 50,
+    });
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    await expect(
+      runtime.services.notifications.handleNotificationRequested({
+        orderNo,
+        channelId: order.channelId,
+        notifyType: 'WEBHOOK',
+        triggerReason: 'ORDER_SUCCESS',
+      }),
+    ).rejects.toThrow('仅允许为终态订单创建对应通知');
+    expect(await countNotificationTasks(orderNo)).toBe(0);
+
+    const response = await runtime.app.handle(
+      new Request('http://localhost/internal/notifications/webhook', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer test-internal-token',
+        },
+        body: JSON.stringify({
+          orderNo,
+          channelId: order.channelId,
+          notifyType: 'WEBHOOK',
+          destination: 'mock://success',
+          payload: {},
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  test('FAST 订单超时后会按派生 SLA 先进入预警，再退款并仅创建终态 WEBHOOK 通知', async () => {
+    const createdAtIso = '2026-03-28T09:00:00.000Z';
+    const orderNo = await createOrder({
+      nowIso: createdAtIso,
+      productType: 'FAST',
+      faceValue: 100,
+    });
 
     await removeSupplierSubmitJob(orderNo);
 
-    const warningScanAt = new Date('2026-03-28T09:10:00.000Z');
-
-    await setOrderDeadlines({
-      orderNo,
-      warningDeadlineAt: new Date('2026-03-28T09:09:00.000Z'),
-      expireDeadlineAt: new Date('2026-03-28T09:59:00.000Z'),
-    });
-
-    await enqueueTimeoutScan(warningScanAt);
+    await enqueueTimeoutScan(new Date('2026-03-28T09:10:01.000Z'));
 
     const warnedOrder = await runtime.services.orders.getOrderByNo(orderNo);
     const warningTasks = await listNotificationTasks(orderNo);
@@ -250,15 +332,7 @@ describe.serial('V1 订单超时扫描', () => {
     expect(warnedOrder.monitorStatus).toBe('TIMEOUT_WARNING');
     expect(warningTasks).toHaveLength(0);
 
-    const expiryScanAt = new Date('2026-03-28T10:00:00.000Z');
-
-    await setOrderDeadlines({
-      orderNo,
-      warningDeadlineAt: new Date('2026-03-28T09:09:00.000Z'),
-      expireDeadlineAt: new Date('2026-03-28T09:59:00.000Z'),
-    });
-
-    await enqueueTimeoutScan(expiryScanAt);
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
 
     const refundedOrder = await runtime.services.orders.getOrderByNo(orderNo);
     const ledgerActions = await getOrderLedgerActions(orderNo);

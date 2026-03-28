@@ -31,21 +31,19 @@ export class NotificationsService {
   async handleNotificationRequested(input: {
     orderNo: string;
     channelId: string;
-    notifyType: 'WEBHOOK' | 'SMS' | 'EMAIL';
-    triggerReason: string;
+    notifyType: NotificationTaskType;
+    triggerReason: NotificationTriggerReason;
   }) {
-    if (input.notifyType !== 'WEBHOOK') {
-      throw badRequest('V1 仅支持终态 WEBHOOK 通知');
-    }
-
-    if (!['ORDER_SUCCESS', 'REFUND_SUCCEEDED', 'INTERNAL_MANUAL'].includes(input.triggerReason)) {
-      throw badRequest('V1 仅支持终态通知触发原因');
-    }
-
-    const notifyType: NotificationTaskType = input.notifyType;
-    const triggerReason = input.triggerReason as NotificationTriggerReason;
-
     const order = await this.orderContract.getNotificationContext(input.orderNo);
+
+    if (
+      (input.triggerReason === 'ORDER_SUCCESS' && order.mainStatus !== 'SUCCESS') ||
+      (input.triggerReason === 'REFUND_SUCCEEDED' &&
+        (order.mainStatus !== 'REFUNDED' || order.refundStatus !== 'SUCCESS'))
+    ) {
+      throw badRequest('仅允许为终态订单创建对应通知');
+    }
+
     const callbackConfig = order.callbackSnapshotJson.callbackConfig as Record<string, unknown>;
     const payload = {
       orderNo: order.orderNo,
@@ -53,7 +51,7 @@ export class NotificationsService {
       supplierStatus: order.supplierStatus,
       notifyStatus: order.notifyStatus,
       refundStatus: order.refundStatus,
-      triggerReason,
+      triggerReason: input.triggerReason,
     };
     const destination = String(callbackConfig.callbackUrl ?? 'mock://success');
     const secret = decryptText(String(callbackConfig.secretEncrypted));
@@ -61,7 +59,7 @@ export class NotificationsService {
     const task = await this.repository.createTask({
       orderNo: order.orderNo,
       channelId: order.channelId,
-      notifyType,
+      notifyType: input.notifyType,
       destination,
       payloadJson: payload,
       signature,

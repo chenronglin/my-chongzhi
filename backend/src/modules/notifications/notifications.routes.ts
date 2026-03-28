@@ -1,9 +1,8 @@
 import { Elysia } from 'elysia';
-import { verifyAdminAuthorizationHeader, verifyInternalAuthorizationHeader } from '@/lib/auth';
+import { verifyAdminAuthorizationHeader } from '@/lib/auth';
 import { ok } from '@/lib/http';
 import { getRequestIdFromRequest } from '@/lib/route-meta';
 import type { IamService } from '@/modules/iam/iam.service';
-import { CreateNotificationBodySchema } from '@/modules/notifications/notifications.schema';
 import type { NotificationsService } from '@/modules/notifications/notifications.service';
 
 interface NotificationsRoutesDeps {
@@ -42,25 +41,5 @@ export function createNotificationsRoutes({
       return ok(requestId, await notificationsService.listDeadLetters());
     });
 
-  const internalRoutes = new Elysia({ prefix: '/internal/notifications' });
-
-  internalRoutes.post(
-    '/webhook',
-    async ({ body, request }) => {
-      const requestId = getRequestIdFromRequest(request);
-      await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-      await notificationsService.handleNotificationRequested({
-        orderNo: body.orderNo,
-        channelId: body.channelId,
-        notifyType: 'WEBHOOK',
-        triggerReason: 'INTERNAL_MANUAL',
-      });
-      return ok(requestId, { success: true });
-    },
-    {
-      body: CreateNotificationBodySchema,
-    },
-  );
-
-  return new Elysia().use(adminRoutes).use(internalRoutes);
+  return new Elysia().use(adminRoutes);
 }

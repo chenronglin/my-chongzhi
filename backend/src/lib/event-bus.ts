@@ -24,8 +24,8 @@ export type AppEventMap = {
   NotificationRequested: {
     orderNo: string;
     channelId: string;
-    notifyType: 'WEBHOOK' | 'SMS' | 'EMAIL';
-    triggerReason: string;
+    notifyType: 'WEBHOOK';
+    triggerReason: 'ORDER_SUCCESS' | 'REFUND_SUCCEEDED';
   };
   NotificationSucceeded: {
     orderNo: string;

@@ -2,7 +2,7 @@
 
 ## 模块职责
 
-- 统一处理 Webhook、短信、邮件通知任务。
+- V1 仅处理订单终态 Webhook 通知任务。
 - 负责签名、投递、重试、死信与投递日志。
 
 ## 核心表
@@ -18,11 +18,11 @@
 - `GET /admin/notifications/tasks/:taskNo`
 - `POST /admin/notifications/tasks/:taskNo/retry`
 - `GET /admin/notifications/dead-letters`
-- `POST /internal/notifications/webhook`
 
 ## 关键规则
 
 - 通知使用订单快照中的回调配置。
+- 仅允许 `SUCCESS` 与 `REFUNDED` 终态订单创建通知任务。
 - 投递失败必须进入重试或死信。
 
 ## 测试重点

@@ -2,7 +2,7 @@ export type NotificationTaskType = 'WEBHOOK';
 
 export type NotificationTaskStatus = 'PENDING' | 'SENDING' | 'SUCCESS' | 'RETRYING' | 'DEAD_LETTER';
 
-export type NotificationTriggerReason = 'ORDER_SUCCESS' | 'REFUND_SUCCEEDED' | 'INTERNAL_MANUAL';
+export type NotificationTriggerReason = 'ORDER_SUCCESS' | 'REFUND_SUCCEEDED';
 
 export interface NotificationTask {
   id: string;
