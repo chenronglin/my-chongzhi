@@ -29,15 +29,4 @@ export const ledgerSql = {
     FROM ledger.account_ledgers
     ORDER BY created_at DESC
   `,
-  listProfitRules: `
-    SELECT
-      id,
-      rule_name AS "ruleName",
-      channel_id AS "channelId",
-      product_id AS "productId",
-      config_json AS "configJson",
-      status
-    FROM ledger.profit_rules
-    ORDER BY created_at DESC
-  `,
 } as const;

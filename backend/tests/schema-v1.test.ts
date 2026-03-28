@@ -39,6 +39,7 @@ const expectedTablesBySchema = {
   supplier: [
     'supplier_callback_logs',
     'supplier_configs',
+    'supplier_orders',
     'supplier_reconcile_diffs',
     'supplier_request_logs',
     'supplier_runtime_breakers',

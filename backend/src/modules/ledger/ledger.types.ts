@@ -23,12 +23,3 @@ export interface LedgerEntry {
   referenceNo: string;
   createdAt: string;
 }
-
-export interface ProfitRule {
-  id: string;
-  ruleName: string;
-  channelId: string | null;
-  productId: string | null;
-  configJson: Record<string, unknown>;
-  status: string;
-}

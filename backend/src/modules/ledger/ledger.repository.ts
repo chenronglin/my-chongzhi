@@ -1,7 +1,7 @@
 import { generateBusinessNo, generateId } from '@/lib/id';
 import { db, first } from '@/lib/sql';
 import { ledgerSql } from '@/modules/ledger/ledger.sql';
-import type { Account, LedgerEntry, ProfitRule } from '@/modules/ledger/ledger.types';
+import type { Account, LedgerEntry } from '@/modules/ledger/ledger.types';
 
 export class LedgerRepository {
   private async lockLedgerMutation(tx: typeof db, key: string): Promise<void> {
@@ -33,55 +33,6 @@ export class LedgerRepository {
   async listLedgerEntries(): Promise<LedgerEntry[]> {
     const rows = await db.unsafe<LedgerEntry[]>(ledgerSql.listEntries);
     return rows.map((row) => this.mapLedgerEntry(row));
-  }
-
-  async listProfitRules(): Promise<ProfitRule[]> {
-    return db.unsafe<ProfitRule[]>(ledgerSql.listProfitRules);
-  }
-
-  async createProfitRule(input: {
-    ruleName: string;
-    channelId?: string;
-    productId?: string;
-    configJson: Record<string, unknown>;
-  }): Promise<ProfitRule> {
-    const rows = await db<ProfitRule[]>`
-      INSERT INTO ledger.profit_rules (
-        id,
-        rule_name,
-        channel_id,
-        product_id,
-        config_json,
-        status,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        ${generateId()},
-        ${input.ruleName},
-        ${input.channelId ?? null},
-        ${input.productId ?? null},
-        ${JSON.stringify(input.configJson)},
-        'ACTIVE',
-        NOW(),
-        NOW()
-      )
-      RETURNING
-        id,
-        rule_name AS "ruleName",
-        channel_id AS "channelId",
-        product_id AS "productId",
-        config_json AS "configJson",
-        status
-    `;
-
-    const rule = rows[0];
-
-    if (!rule) {
-      throw new Error('创建分润规则失败');
-    }
-
-    return rule;
   }
 
   async findAccount(ownerType: string, ownerId: string): Promise<Account | null> {

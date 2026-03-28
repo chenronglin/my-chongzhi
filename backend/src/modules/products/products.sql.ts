@@ -9,7 +9,7 @@ export const productsSql = {
       face_value AS "faceValue",
       recharge_mode AS "productType",
       sales_unit AS "salesUnit",
-      status,
+      status
     FROM product.recharge_products
     WHERE status = 'ACTIVE'
     ORDER BY face_value ASC, created_at DESC

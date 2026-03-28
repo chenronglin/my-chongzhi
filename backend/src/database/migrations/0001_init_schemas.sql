@@ -260,6 +260,21 @@ CREATE TABLE supplier.supplier_request_logs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE supplier.supplier_orders (
+  id TEXT PRIMARY KEY,
+  order_no TEXT NOT NULL,
+  supplier_id TEXT NOT NULL,
+  supplier_order_no TEXT NOT NULL UNIQUE,
+  request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  response_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  standard_status TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL DEFAULT 1,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (order_no, supplier_id)
+);
+
 CREATE TABLE supplier.supplier_callback_logs (
   id TEXT PRIMARY KEY,
   supplier_id TEXT,

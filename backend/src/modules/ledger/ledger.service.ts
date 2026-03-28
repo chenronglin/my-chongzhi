@@ -13,19 +13,6 @@ export class LedgerService implements LedgerContract {
     return this.repository.listLedgerEntries();
   }
 
-  async listProfitRules() {
-    return this.repository.listProfitRules();
-  }
-
-  async createProfitRule(input: {
-    ruleName: string;
-    channelId?: string;
-    productId?: string;
-    configJson: Record<string, unknown>;
-  }) {
-    return this.repository.createProfitRule(input);
-  }
-
   async ensureBalanceSufficient(input: { channelId: string; amount: number }): Promise<void> {
     const channelAccount = await this.repository.findAccount('CHANNEL', input.channelId);
 

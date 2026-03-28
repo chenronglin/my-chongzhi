@@ -58,7 +58,41 @@ async function getOrderLedgerEntries(orderNo: string) {
   `;
 }
 
+async function findSupplierOrder(orderNo: string) {
+  return db<
+    {
+      supplierId: string;
+      supplierOrderNo: string;
+      standardStatus: string;
+    }[]
+  >`
+    SELECT
+      supplier_id AS "supplierId",
+      supplier_order_no AS "supplierOrderNo",
+      standard_status AS "standardStatus"
+    FROM supplier.supplier_orders
+    WHERE order_no = ${orderNo}
+    LIMIT 1
+  `;
+}
+
 async function resetTestStateV1() {
+  await db.unsafe(`
+    CREATE TABLE IF NOT EXISTS supplier.supplier_orders (
+      id TEXT PRIMARY KEY,
+      order_no TEXT NOT NULL,
+      supplier_id TEXT NOT NULL,
+      supplier_order_no TEXT NOT NULL UNIQUE,
+      request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      response_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      standard_status TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL DEFAULT 1,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (order_no, supplier_id)
+    )
+  `);
   await db`
     TRUNCATE TABLE
       worker.worker_job_attempts,
@@ -68,6 +102,7 @@ async function resetTestStateV1() {
       notification.notification_dead_letters,
       notification.notification_tasks,
       supplier.supplier_callback_logs,
+      supplier.supplier_orders,
       supplier.supplier_request_logs,
       ordering.order_events,
       ordering.orders,
@@ -75,6 +110,17 @@ async function resetTestStateV1() {
   `;
 
   await runSeed(db);
+}
+
+async function processWorkerRound() {
+  await db`
+    UPDATE worker.worker_jobs
+    SET
+      next_run_at = NOW(),
+      updated_at = NOW()
+    WHERE status IN ('READY', 'RETRY_WAIT')
+  `;
+  await runtime.services.worker.processReadyJobs();
 }
 
 beforeAll(async () => {
@@ -121,5 +167,36 @@ describe.serial('V1 ISP 充值下单链路', () => {
     expect(ledgerEntries.map((entry) => entry.direction)).toEqual(['DEBIT', 'CREDIT']);
     expect(ledgerEntries.every((entry) => Number(entry.amount) > 0)).toBe(true);
     expect(ledgerEntries.every((entry) => entry.referenceNo)).toBe(true);
+  });
+
+  test('创建订单后处理 supplier.submit 不会因缺少供应商订单表而失败', async () => {
+    const body = {
+      channelOrderNo: `itest-worker-${Date.now()}`,
+      mobile: '13800130000',
+      faceValue: 50,
+      product_type: 'MIXED',
+    };
+
+    const response = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders('/open-api/orders', body),
+        body: JSON.stringify(body),
+      }),
+    );
+    const json = await readResponseJson(response);
+    const orderNo = String(json.data.orderNo);
+
+    await processWorkerRound();
+
+    const supplierOrders = await findSupplierOrder(orderNo);
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expect(supplierOrders).toHaveLength(1);
+    expect(supplierOrders[0]).toMatchObject({
+      standardStatus: 'ACCEPTED',
+    });
+    expect(order.mainStatus).toBe('PROCESSING');
+    expect(order.supplierStatus).toBe('ACCEPTED');
   });
 });
