@@ -362,7 +362,10 @@ export class OrdersService implements OrderContract {
   }) {
     const order = await this.getOrderByNo(payload.orderNo);
 
-    if (['SUCCESS', 'REFUNDED', 'CLOSED'].includes(order.mainStatus)) {
+    if (
+      ['SUCCESS', 'REFUNDED', 'REFUNDING', 'CLOSED'].includes(order.mainStatus) ||
+      order.refundStatus === 'PENDING'
+    ) {
       return;
     }
 

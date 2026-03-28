@@ -252,6 +252,16 @@ async function getOrderLedgerActions(orderNo: string) {
   `;
 }
 
+async function countSupplierOrders(orderNo: string) {
+  const rows = await db<{ count: number }[]>`
+    SELECT COUNT(*)::int AS count
+    FROM supplier.supplier_orders
+    WHERE order_no = ${orderNo}
+  `;
+
+  return rows[0]?.count ?? 0;
+}
+
 async function setOrderState(
   orderNo: string,
   input: {
@@ -536,6 +546,55 @@ describe.serial('V1 订单超时扫描', () => {
     expect(afterLateSuccess.mainStatus).toBe('REFUNDING');
     expect(afterLateSuccess.refundStatus).toBe('PENDING');
     expect(afterLateSuccess.supplierStatus).toBe('FAIL');
+
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
+
+    const refundedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+    const ledgerActions = await getOrderLedgerActions(orderNo);
+
+    expect(refundedOrder.mainStatus).toBe('REFUNDED');
+    expect(refundedOrder.refundStatus).toBe('SUCCESS');
+    expect(countAction(ledgerActions, 'ORDER_REFUND')).toBe(2);
+  });
+
+  test('REFUNDING/PENDING 期间的供应商受理输入不会把订单拉回处理中', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'FAST',
+      faceValue: 100,
+    });
+
+    await removeSupplierSubmitJob(orderNo);
+    await setOrderState(orderNo, {
+      mainStatus: 'REFUNDING',
+      supplierStatus: 'FAIL',
+      refundStatus: 'PENDING',
+      notifyStatus: 'PENDING',
+      monitorStatus: 'TIMEOUT_WARNING',
+      warningDeadlineAt: new Date('2026-03-28T09:10:00.000Z'),
+      expireDeadlineAt: new Date('2026-03-28T10:00:00.000Z'),
+    });
+
+    await runtime.services.suppliers.submitOrder({ orderNo });
+    await runtime.services.orders.handleSupplierAccepted({
+      orderNo,
+      supplierId: 'late-supplier',
+      supplierOrderNo: 'late-accepted-order-no',
+      status: 'ACCEPTED',
+    });
+    await runtime.services.orders.handleSupplierAccepted({
+      orderNo,
+      supplierId: 'late-supplier',
+      supplierOrderNo: 'late-processing-order-no',
+      status: 'PROCESSING',
+    });
+
+    const afterLateAccepted = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expect(afterLateAccepted.mainStatus).toBe('REFUNDING');
+    expect(afterLateAccepted.refundStatus).toBe('PENDING');
+    expect(afterLateAccepted.supplierStatus).toBe('FAIL');
+    expect(await countSupplierOrders(orderNo)).toBe(0);
 
     await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
 
