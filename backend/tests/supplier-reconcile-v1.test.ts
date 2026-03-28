@@ -89,6 +89,14 @@ async function processWorkerRound() {
   await runtime.services.worker.processReadyJobs();
 }
 
+async function getDatabaseCurrentDate() {
+  const rows = await db<{ currentDate: string }[]>`
+    SELECT CURRENT_DATE::text AS "currentDate"
+  `;
+
+  return rows[0]?.currentDate ?? new Date().toISOString().slice(0, 10);
+}
+
 beforeAll(async () => {
   await acquireIntegrationTestLock();
   await rebuildManagedSchemas();
@@ -156,7 +164,7 @@ test('日对账任务会持久化平台退款但供应商成功的差异', async
     jobType: 'supplier.reconcile.daily',
     businessKey: `reconcile:${orderNo}`,
     payload: {
-      reconcileDate: new Date().toISOString().slice(0, 10),
+      reconcileDate: await getDatabaseCurrentDate(),
     },
   });
   await runtime.services.worker.processReadyJobs();
@@ -251,7 +259,7 @@ test('重复执行日对账不会写入重复差异', async () => {
   );
   const json = await readResponseJson(response);
   const orderNo = String(json.data.orderNo);
-  const reconcileDate = new Date().toISOString().slice(0, 10);
+  const reconcileDate = await getDatabaseCurrentDate();
 
   await processWorkerRound();
   await processWorkerRound();

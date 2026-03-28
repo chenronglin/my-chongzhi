@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 
+import { eventBus } from '@/lib/event-bus';
 import { OrdersService } from '@/modules/orders/orders.service';
 import type { OrderRecord } from '@/modules/orders/orders.types';
 
@@ -69,6 +70,10 @@ function buildOrderRecord(overrides: Partial<OrderRecord> = {}): OrderRecord {
     ...overrides,
   };
 }
+
+beforeEach(() => {
+  eventBus.clear();
+});
 
 describe('OrdersService.createOrder', () => {
   test('returns the existing order when a concurrent duplicate insert hits the unique key', async () => {
@@ -472,5 +477,182 @@ describe('OrdersService.createOrder', () => {
     expect(createCalls).toBe(1);
     expect(debitCalls).toBe(1);
     expect(enqueueCalls).toBe(1);
+  });
+
+  test('refunds and finalizes the order when initial supplier.submit enqueue fails after debit', async () => {
+    let currentOrder = buildOrderRecord({
+      orderNo: 'order-no-enqueue-fail',
+      channelOrderNo: 'channel-order-enqueue-fail',
+    });
+    let debitCalls = 0;
+    let refundCalls = 0;
+    const eventTypes: string[] = [];
+
+    const repository = {
+      async withCreateOrderLock(
+        _channelId: string,
+        _channelOrderNo: string,
+        callback: () => Promise<OrderRecord>,
+      ) {
+        return callback();
+      },
+      async findByChannelOrder() {
+        return null;
+      },
+      async createOrder() {
+        return currentOrder;
+      },
+      async addEvent(input: { eventType: string }) {
+        eventTypes.push(input.eventType);
+      },
+      async deleteOrder() {
+        throw new Error('deleteOrder should not be called after a successful debit');
+      },
+      async findByOrderNo() {
+        return currentOrder;
+      },
+      async updateStatuses(
+        _orderNo: string,
+        update: {
+          mainStatus?: OrderRecord['mainStatus'];
+          supplierStatus?: OrderRecord['supplierStatus'];
+          refundStatus?: OrderRecord['refundStatus'];
+          finishedAt?: boolean;
+        },
+      ) {
+        currentOrder = {
+          ...currentOrder,
+          mainStatus: update.mainStatus ?? currentOrder.mainStatus,
+          supplierStatus: update.supplierStatus ?? currentOrder.supplierStatus,
+          refundStatus: update.refundStatus ?? currentOrder.refundStatus,
+          finishedAt:
+            update.finishedAt === true ? '2026-03-29T00:00:00.000Z' : currentOrder.finishedAt,
+        };
+      },
+    };
+
+    const channelContract = {
+      async authenticateOpenRequest() {
+        throw new Error('authenticateOpenRequest should not be called in service test');
+      },
+      async getOrderPolicy() {
+        return {
+          channel: {
+            id: 'channel-1',
+            channelCode: 'demo-channel',
+            channelName: 'Demo Channel',
+            status: 'ACTIVE',
+          },
+          pricePolicy: {
+            salePrice: 48,
+          },
+          callbackConfig: {
+            callbackUrl: 'mock://success',
+            secretEncrypted: 'encrypted-secret',
+          },
+        };
+      },
+      async getCallbackConfig() {
+        throw new Error('getCallbackConfig should not be called in service test');
+      },
+      async getChannelById() {
+        throw new Error('getChannelById should not be called in service test');
+      },
+    };
+    const productContract = {
+      async matchRechargeProduct() {
+        return {
+          mobileContext: {
+            mobile: currentOrder.mobile,
+            province: String(currentOrder.province),
+            ispName: String(currentOrder.ispName),
+          },
+          product: {
+            id: currentOrder.matchedProductId,
+            productType: currentOrder.requestedProductType,
+            faceValue: currentOrder.faceValue,
+          },
+          supplierCandidates: [
+            {
+              supplierId: 'supplier-1',
+              costPrice: currentOrder.purchasePrice,
+            },
+          ],
+        };
+      },
+    };
+    const riskContract = {
+      async preCheck() {
+        return {
+          decision: 'PASS',
+          reason: 'ok',
+        };
+      },
+    };
+    const ledgerContract = {
+      async ensureBalanceSufficient() {},
+      async debitOrderAmount() {
+        debitCalls += 1;
+        return {
+          referenceNo: 'ledger-ref-enqueue-fail',
+        };
+      },
+      async refundOrderAmount() {
+        refundCalls += 1;
+        return {
+          referenceNo: 'ledger-refund-enqueue-fail',
+        };
+      },
+      async confirmOrderProfit() {},
+    };
+    const workerContract = {
+      async enqueue() {
+        throw new Error('enqueue failed');
+      },
+      async schedule() {
+        throw new Error('schedule should not be called in service test');
+      },
+      async processReadyJobs() {},
+      registerHandler() {},
+      listRegisteredJobTypes() {
+        return [];
+      },
+      async retry() {},
+      async cancel() {},
+      async listDeadLetters() {
+        return [];
+      },
+    };
+
+    const service = new OrdersService(
+      repository as never,
+      channelContract as never,
+      productContract as never,
+      riskContract as never,
+      ledgerContract as never,
+      workerContract as never,
+    );
+
+    await expect(
+      service.createOrder({
+        channelId: currentOrder.channelId,
+        channelOrderNo: currentOrder.channelOrderNo,
+        mobile: currentOrder.mobile,
+        faceValue: currentOrder.faceValue,
+        productType: currentOrder.requestedProductType,
+        extJson: {},
+        requestId: 'req-enqueue-fail',
+        clientIp: '127.0.0.1',
+      }),
+    ).rejects.toThrow('enqueue failed');
+
+    expect(debitCalls).toBe(1);
+    expect(refundCalls).toBe(1);
+    expect(currentOrder.mainStatus).toBe('REFUNDED');
+    expect(currentOrder.supplierStatus).toBe('FAIL');
+    expect(currentOrder.refundStatus).toBe('SUCCESS');
+    expect(currentOrder.finishedAt).toBeTruthy();
+    expect(eventTypes).toContain('SupplierSubmitEnqueueFailed');
+    expect(eventTypes).toContain('RefundSucceeded');
   });
 });

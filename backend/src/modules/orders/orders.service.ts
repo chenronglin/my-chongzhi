@@ -284,15 +284,79 @@ export class OrdersService implements OrderContract {
         throw error;
       }
 
-      await this.workerContract.enqueue({
-        jobType: 'supplier.submit',
-        businessKey: order.orderNo,
-        payload: {
-          orderNo: order.orderNo,
-        },
-      });
+      try {
+        await this.workerContract.enqueue({
+          jobType: 'supplier.submit',
+          businessKey: order.orderNo,
+          payload: {
+            orderNo: order.orderNo,
+          },
+        });
+      } catch (error) {
+        await this.compensateInitialSubmitEnqueueFailure(
+          order,
+          error instanceof Error ? error.message : 'supplier.submit enqueue failed',
+        );
+        throw error;
+      }
 
       return this.getOrderByNo(order.orderNo);
+    });
+  }
+
+  private async compensateInitialSubmitEnqueueFailure(order: OrderRecord, reason: string) {
+    const currentOrder = await this.getOrderByNo(order.orderNo);
+
+    if (currentOrder.mainStatus === 'REFUNDED') {
+      return;
+    }
+
+    if (
+      currentOrder.mainStatus !== 'CREATED' ||
+      currentOrder.supplierStatus !== 'WAIT_SUBMIT' ||
+      currentOrder.refundStatus !== 'NONE'
+    ) {
+      return;
+    }
+
+    await this.repository.updateStatuses(currentOrder.orderNo, {
+      mainStatus: 'REFUNDING',
+      supplierStatus: 'FAIL',
+      refundStatus: 'PENDING',
+    });
+    await this.repository.addEvent({
+      orderNo: currentOrder.orderNo,
+      eventType: 'SupplierSubmitEnqueueFailed',
+      sourceService: 'orders',
+      sourceNo: null,
+      beforeStatusJson: {
+        mainStatus: currentOrder.mainStatus,
+        supplierStatus: currentOrder.supplierStatus,
+        refundStatus: currentOrder.refundStatus,
+      },
+      afterStatusJson: {
+        mainStatus: 'REFUNDING',
+        supplierStatus: 'FAIL',
+        refundStatus: 'PENDING',
+      },
+      payloadJson: {
+        reason,
+      },
+      idempotencyKey: `supplier-submit-enqueue-fail:${currentOrder.orderNo}`,
+      operator: 'SYSTEM',
+      requestId: currentOrder.requestId,
+    });
+
+    const refund = await this.ledgerContract.refundOrderAmount({
+      channelId: currentOrder.channelId,
+      orderNo: currentOrder.orderNo,
+      amount: currentOrder.salePrice,
+    });
+
+    await this.handleRefundSucceeded({
+      orderNo: currentOrder.orderNo,
+      sourceService: 'ledger',
+      sourceNo: refund.referenceNo,
     });
   }
 
