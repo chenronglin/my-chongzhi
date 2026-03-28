@@ -76,7 +76,7 @@ export class WorkerService implements WorkerContract {
   }
 
   async processReadyJobs(limit = 20): Promise<void> {
-    const jobs = await this.repository.listReady(limit);
+    const jobs = await this.repository.claimReady(limit);
 
     for (const job of jobs) {
       const handler = this.handlers.get(job.jobType as WorkerJobType);
@@ -85,8 +85,6 @@ export class WorkerService implements WorkerContract {
         await this.repository.markDeadLetter(job.id, `未找到任务处理器: ${job.jobType}`);
         continue;
       }
-
-      await this.repository.markRunning(job.id);
       const startedAt = Date.now();
 
       try {
