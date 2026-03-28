@@ -66,6 +66,27 @@ export class SuppliersService implements SupplierContract {
         syncedProducts.push(product.productCode);
       }
 
+      const currentMappings = await this.repository.listMappingsBySupplierId(supplier.id);
+
+      for (const mapping of currentMappings) {
+        if (syncedProducts.includes(mapping.productCode)) {
+          continue;
+        }
+
+        await this.repository.deactivateProductSupplierMapping({
+          productId: mapping.productId,
+          supplierId: supplier.id,
+        });
+
+        const activeMappingCount = await this.repository.countActiveMappingsByProductId(
+          mapping.productId,
+        );
+
+        if (activeMappingCount === 0) {
+          await this.repository.markProductUnavailable(mapping.productId);
+        }
+      }
+
       await this.repository.addProductSyncLog({
         supplierId: supplier.id,
         syncType: 'FULL',
@@ -342,6 +363,7 @@ export class SuppliersService implements SupplierContract {
   private buildDiffFromCandidate(
     candidate: SupplierReconcileCandidate,
     reconcileDate: string,
+    onlyInflight: boolean,
   ): {
     supplierId: string;
     reconcileDate: string;
@@ -387,6 +409,27 @@ export class SuppliersService implements SupplierContract {
       };
     }
 
+    if (
+      onlyInflight &&
+      candidate.platformMainStatus === 'PROCESSING' &&
+      ['SUCCESS', 'FAIL'].includes(candidate.supplierOrderStatus)
+    ) {
+      return {
+        supplierId: candidate.supplierId,
+        reconcileDate,
+        orderNo: candidate.orderNo,
+        diffType: 'INFLIGHT_STATUS_MISMATCH',
+        diffAmount: candidate.purchasePrice,
+        detailsJson: {
+          platformMainStatus: candidate.platformMainStatus,
+          platformSupplierStatus: candidate.platformSupplierStatus,
+          refundStatus: candidate.refundStatus,
+          supplierOrderStatus: candidate.supplierOrderStatus,
+          supplierOrderNo: candidate.supplierOrderNo,
+        },
+      };
+    }
+
     return null;
   }
 
@@ -398,25 +441,17 @@ export class SuppliersService implements SupplierContract {
     const diffs: SupplierReconcileDiff[] = [];
 
     for (const candidate of candidates) {
-      const builtDiff = this.buildDiffFromCandidate(candidate, input.reconcileDate);
+      const builtDiff = this.buildDiffFromCandidate(
+        candidate,
+        input.reconcileDate,
+        input.onlyInflight,
+      );
 
       if (!builtDiff) {
         continue;
       }
 
-      const existing = await this.repository.findReconcileDiff({
-        supplierId: builtDiff.supplierId,
-        reconcileDate: builtDiff.reconcileDate,
-        orderNo: builtDiff.orderNo,
-        diffType: builtDiff.diffType,
-      });
-
-      if (existing) {
-        diffs.push(existing);
-        continue;
-      }
-
-      diffs.push(await this.repository.createReconcileDiff(builtDiff));
+      diffs.push(await this.repository.upsertReconcileDiff(builtDiff));
     }
 
     return diffs;

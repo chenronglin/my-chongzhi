@@ -184,3 +184,93 @@ test('日对账任务会持久化平台退款但供应商成功的差异', async
     supplierOrderStatus: 'SUCCESS',
   });
 });
+
+test('在途对账会识别平台处理中但供应商已成功的差异', async () => {
+  const body = {
+    channelOrderNo: `itest-inflight-${Date.now()}`,
+    mobile: '13800130000',
+    faceValue: 50,
+    product_type: 'MIXED',
+  };
+
+  const response = await runtime.app.handle(
+    new Request('http://localhost/open-api/orders', {
+      method: 'POST',
+      headers: buildSignedHeaders({
+        path: '/open-api/orders',
+        body,
+      }),
+      body: JSON.stringify(body),
+    }),
+  );
+  const json = await readResponseJson(response);
+  const orderNo = String(json.data.orderNo);
+
+  await processWorkerRound();
+
+  await db`
+    UPDATE supplier.supplier_orders
+    SET
+      standard_status = 'SUCCESS',
+      updated_at = NOW()
+    WHERE order_no = ${orderNo}
+  `;
+
+  const diffs = await runtime.services.suppliers.runInflightReconcile();
+
+  expect(diffs).toHaveLength(1);
+  expect(diffs[0]).toMatchObject({
+    orderNo,
+    diffType: 'INFLIGHT_STATUS_MISMATCH',
+  });
+});
+
+test('重复执行日对账不会写入重复差异', async () => {
+  const body = {
+    channelOrderNo: `itest-reconcile-dup-${Date.now()}`,
+    mobile: '13800130000',
+    faceValue: 50,
+    product_type: 'MIXED',
+  };
+
+  const response = await runtime.app.handle(
+    new Request('http://localhost/open-api/orders', {
+      method: 'POST',
+      headers: buildSignedHeaders({
+        path: '/open-api/orders',
+        body,
+      }),
+      body: JSON.stringify(body),
+    }),
+  );
+  const json = await readResponseJson(response);
+  const orderNo = String(json.data.orderNo);
+  const reconcileDate = new Date().toISOString().slice(0, 10);
+
+  await processWorkerRound();
+  await processWorkerRound();
+  await processWorkerRound();
+
+  await db`
+    UPDATE ordering.orders
+    SET
+      main_status = 'REFUNDED',
+      refund_status = 'SUCCESS',
+      updated_at = NOW()
+    WHERE order_no = ${orderNo}
+  `;
+
+  await Promise.all([
+    runtime.services.suppliers.runDailyReconcile({ reconcileDate }),
+    runtime.services.suppliers.runDailyReconcile({ reconcileDate }),
+  ]);
+
+  const rows = await db<{ total: number }[]>`
+    SELECT COUNT(*)::int AS total
+    FROM supplier.supplier_reconcile_diffs
+    WHERE order_no = ${orderNo}
+      AND diff_type = 'PLATFORM_REFUNDED_SUPPLIER_SUCCESS'
+  `;
+
+  expect(rows[0]?.total).toBe(1);
+});

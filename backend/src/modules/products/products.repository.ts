@@ -44,12 +44,21 @@ export class ProductsRepository {
         recharge_mode AS "productType",
         sales_unit AS "salesUnit",
         status
-      FROM product.recharge_products
-      WHERE carrier_code = ${input.carrierCode}
-        AND face_value = ${input.faceValue}
-        AND recharge_mode = ${input.productType}
-        AND status = 'ACTIVE'
-        AND province_name = ${input.province}
+      FROM product.recharge_products AS rp
+      WHERE rp.carrier_code = ${input.carrierCode}
+        AND rp.face_value = ${input.faceValue}
+        AND rp.recharge_mode = ${input.productType}
+        AND rp.status = 'ACTIVE'
+        AND rp.sales_status = 'ON_SALE'
+        AND rp.inventory_quantity > 0
+        AND rp.dynamic_updated_at >= NOW() - INTERVAL '30 minutes'
+        AND rp.province_name = ${input.province}
+        AND EXISTS (
+          SELECT 1
+          FROM product.product_supplier_mappings AS psm
+          WHERE psm.product_id = rp.id
+            AND psm.status = 'ACTIVE'
+        )
       ORDER BY product_code ASC
       LIMIT 2
     `;
@@ -75,12 +84,21 @@ export class ProductsRepository {
         recharge_mode AS "productType",
         sales_unit AS "salesUnit",
         status
-      FROM product.recharge_products
-      WHERE carrier_code = ${input.carrierCode}
-        AND face_value = ${input.faceValue}
-        AND recharge_mode = ${input.productType}
-        AND status = 'ACTIVE'
-        AND province_name = '全国'
+      FROM product.recharge_products AS rp
+      WHERE rp.carrier_code = ${input.carrierCode}
+        AND rp.face_value = ${input.faceValue}
+        AND rp.recharge_mode = ${input.productType}
+        AND rp.status = 'ACTIVE'
+        AND rp.sales_status = 'ON_SALE'
+        AND rp.inventory_quantity > 0
+        AND rp.dynamic_updated_at >= NOW() - INTERVAL '30 minutes'
+        AND rp.province_name = '全国'
+        AND EXISTS (
+          SELECT 1
+          FROM product.product_supplier_mappings AS psm
+          WHERE psm.product_id = rp.id
+            AND psm.status = 'ACTIVE'
+        )
       ORDER BY product_code ASC
       LIMIT 2
     `;

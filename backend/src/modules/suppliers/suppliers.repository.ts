@@ -18,6 +18,12 @@ interface ProductRecord {
   productCode: string;
 }
 
+interface SupplierMappingRecord {
+  productId: string;
+  productCode: string;
+  status: string;
+}
+
 interface ReconcileCandidateRow {
   orderNo: string;
   supplierId: string;
@@ -305,6 +311,57 @@ export class SuppliersRepository {
     `;
   }
 
+  async listMappingsBySupplierId(supplierId: string): Promise<SupplierMappingRecord[]> {
+    return db<SupplierMappingRecord[]>`
+      SELECT
+        psm.product_id AS "productId",
+        rp.product_code AS "productCode",
+        psm.status
+      FROM product.product_supplier_mappings AS psm
+      INNER JOIN product.recharge_products AS rp
+        ON rp.id = psm.product_id
+      WHERE psm.supplier_id = ${supplierId}
+      ORDER BY rp.product_code ASC
+    `;
+  }
+
+  async deactivateProductSupplierMapping(input: {
+    productId: string;
+    supplierId: string;
+  }): Promise<void> {
+    await db`
+      UPDATE product.product_supplier_mappings
+      SET
+        status = 'INACTIVE',
+        updated_at = NOW()
+      WHERE product_id = ${input.productId}
+        AND supplier_id = ${input.supplierId}
+    `;
+  }
+
+  async countActiveMappingsByProductId(productId: string): Promise<number> {
+    const row = await first<{ total: number }>(db<{ total: number }[]>`
+      SELECT COUNT(*)::int AS total
+      FROM product.product_supplier_mappings
+      WHERE product_id = ${productId}
+        AND status = 'ACTIVE'
+    `);
+
+    return row?.total ?? 0;
+  }
+
+  async markProductUnavailable(productId: string): Promise<void> {
+    await db`
+      UPDATE product.recharge_products
+      SET
+        sales_status = 'OFF_SALE',
+        inventory_quantity = 0,
+        dynamic_updated_at = NOW(),
+        updated_at = NOW()
+      WHERE id = ${productId}
+    `;
+  }
+
   async addProductSyncLog(input: {
     supplierId: string;
     syncType: string;
@@ -571,7 +628,7 @@ export class SuppliersRepository {
     return row ? this.mapReconcileDiff(row) : null;
   }
 
-  async createReconcileDiff(input: {
+  async upsertReconcileDiff(input: {
     supplierId: string;
     reconcileDate: string;
     orderNo: string | null;
@@ -605,6 +662,7 @@ export class SuppliersRepository {
         NOW(),
         NOW()
       )
+      ON CONFLICT DO NOTHING
       RETURNING
         id,
         supplier_id AS "supplierId",
@@ -620,11 +678,22 @@ export class SuppliersRepository {
 
     const diff = rows[0];
 
-    if (!diff) {
+    if (diff) {
+      return this.mapReconcileDiff(diff);
+    }
+
+    const existing = await this.findReconcileDiff({
+      supplierId: input.supplierId,
+      reconcileDate: input.reconcileDate,
+      orderNo: input.orderNo,
+      diffType: input.diffType,
+    });
+
+    if (!existing) {
       throw new Error('创建供应商对账差异失败');
     }
 
-    return this.mapReconcileDiff(diff);
+    return existing;
   }
 
   async listReconcileDiffs(input?: {

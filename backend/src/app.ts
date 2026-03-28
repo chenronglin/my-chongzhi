@@ -113,7 +113,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     });
   });
   workerModule.service.registerHandler('order.timeout.scan', async () => {
-    // Task 5 only needs the scheduler registration restored. Timeout handling stays in orders.
+    throw new Error('order.timeout.scan 尚未在 V1 中实现');
   });
   workerModule.service.registerHandler('notification.deliver', (payload) =>
     notificationsModule.service.handleDeliverJob(payload),

@@ -241,4 +241,26 @@ describe('ISP 充值商品匹配', () => {
       }),
     ).rejects.toThrow('命中多个有效充值商品');
   });
+
+  test('动态刷新将商品置为不可售后不会继续参与路由', async () => {
+    await runtime.services.suppliers.syncDynamicCatalog({
+      supplierCode: 'mock-supplier',
+      items: [
+        {
+          productCode: 'cmcc-fast-100',
+          salesStatus: 'MAINTENANCE',
+          purchasePrice: 96,
+          inventoryQuantity: 0,
+        },
+      ],
+    });
+
+    await expect(
+      runtime.services.products.matchRechargeProduct({
+        mobile: '13800138000',
+        faceValue: 100,
+        productType: 'FAST',
+      }),
+    ).rejects.toThrow('未匹配到可用充值商品');
+  });
 });

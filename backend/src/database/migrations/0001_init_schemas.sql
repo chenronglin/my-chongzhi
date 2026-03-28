@@ -152,8 +152,8 @@ CREATE TABLE product.recharge_products (
   sales_unit TEXT NOT NULL DEFAULT 'CNY',
   sales_status TEXT NOT NULL DEFAULT 'ON_SALE',
   purchase_price NUMERIC(18, 2) NOT NULL DEFAULT 0,
-  inventory_quantity INTEGER NOT NULL DEFAULT 0,
-  dynamic_updated_at TIMESTAMPTZ,
+  inventory_quantity INTEGER NOT NULL DEFAULT 999999,
+  dynamic_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -478,6 +478,14 @@ CREATE INDEX idx_product_mappings_supplier
 
 CREATE INDEX idx_supplier_request_logs_order
   ON supplier.supplier_request_logs (order_no, created_at DESC);
+
+CREATE UNIQUE INDEX uq_supplier_reconcile_diffs_dedupe
+  ON supplier.supplier_reconcile_diffs (
+    supplier_id,
+    reconcile_date,
+    COALESCE(order_no, ''),
+    diff_type
+  );
 
 CREATE INDEX idx_ledger_ledgers_order_no
   ON ledger.account_ledgers (order_no, created_at DESC);
