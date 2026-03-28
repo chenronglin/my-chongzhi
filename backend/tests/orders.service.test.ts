@@ -85,6 +85,13 @@ describe('OrdersService.createOrder', () => {
     });
 
     const repository = {
+      async withCreateOrderLock(
+        _channelId: string,
+        _channelOrderNo: string,
+        callback: () => Promise<OrderRecord>,
+      ) {
+        return callback();
+      },
       async findByChannelOrder() {
         lookupCalls += 1;
         pendingDuplicateLookups += 1;
@@ -257,6 +264,212 @@ describe('OrdersService.createOrder', () => {
     expect(lookupCalls).toBe(3);
     expect(createCalls).toBe(2);
     expect(addEventCalls).toBe(1);
+    expect(debitCalls).toBe(1);
+    expect(enqueueCalls).toBe(1);
+  });
+
+  test('does not let a duplicate request observe the order before the first create flow finishes', async () => {
+    const createdOrder = buildOrderRecord({
+      orderNo: 'order-no-serialized',
+      channelOrderNo: 'channel-order-serialized',
+    });
+    let createCalls = 0;
+    let debitCalls = 0;
+    let enqueueCalls = 0;
+    let releaseDebit!: () => void;
+    let signalDebitStarted!: () => void;
+    const debitGate = new Promise<void>((resolve) => {
+      releaseDebit = resolve;
+    });
+    const debitStarted = new Promise<void>((resolve) => {
+      signalDebitStarted = resolve;
+    });
+    let orderVisible = false;
+    let activeLock = Promise.resolve();
+
+    const repository = {
+      async withCreateOrderLock(
+        _channelId: string,
+        _channelOrderNo: string,
+        callback: () => Promise<OrderRecord>,
+      ) {
+        const previousLock = activeLock;
+        let releaseLock!: () => void;
+        activeLock = new Promise<void>((resolve) => {
+          releaseLock = resolve;
+        });
+        await previousLock;
+
+        try {
+          return await callback();
+        } finally {
+          releaseLock();
+        }
+      },
+      async findByChannelOrder() {
+        return orderVisible ? createdOrder : null;
+      },
+      async createOrder() {
+        createCalls += 1;
+        orderVisible = true;
+        return createdOrder;
+      },
+      async addEvent() {},
+      async deleteOrder() {
+        throw new Error('deleteOrder should not be called in serialization test');
+      },
+      async findByOrderNo() {
+        return createdOrder;
+      },
+    };
+
+    const channelContract = {
+      async authenticateOpenRequest() {
+        throw new Error('authenticateOpenRequest should not be called in service test');
+      },
+      async getOrderPolicy() {
+        return {
+          channel: {
+            id: 'channel-1',
+            channelCode: 'demo-channel',
+            channelName: 'Demo Channel',
+            status: 'ACTIVE',
+          },
+          pricePolicy: {
+            salePrice: 48,
+          },
+          callbackConfig: {
+            callbackUrl: 'mock://success',
+            secretEncrypted: 'encrypted-secret',
+          },
+        };
+      },
+      async getCallbackConfig() {
+        throw new Error('getCallbackConfig should not be called in service test');
+      },
+      async getChannelById() {
+        throw new Error('getChannelById should not be called in service test');
+      },
+    };
+    const productContract = {
+      async matchRechargeProduct() {
+        return {
+          mobileContext: {
+            mobile: createdOrder.mobile,
+            province: String(createdOrder.province),
+            ispName: String(createdOrder.ispName),
+          },
+          product: {
+            id: createdOrder.matchedProductId,
+            productType: createdOrder.requestedProductType,
+            faceValue: createdOrder.faceValue,
+          },
+          supplierCandidates: [
+            {
+              supplierId: 'supplier-1',
+              costPrice: createdOrder.purchasePrice,
+            },
+          ],
+        };
+      },
+    };
+    const riskContract = {
+      async preCheck() {
+        return {
+          decision: 'PASS',
+          reason: 'ok',
+        };
+      },
+    };
+    const ledgerContract = {
+      async ensureBalanceSufficient() {},
+      async debitOrderAmount() {
+        debitCalls += 1;
+        signalDebitStarted();
+        await debitGate;
+        return {
+          referenceNo: 'ledger-ref-serialized',
+        };
+      },
+      async refundOrderAmount() {
+        throw new Error('refundOrderAmount should not be called in service test');
+      },
+      async confirmOrderProfit() {},
+    };
+    const workerContract = {
+      async enqueue() {
+        enqueueCalls += 1;
+        return {
+          id: 'job-serialized',
+          jobType: 'supplier.submit',
+          businessKey: createdOrder.orderNo,
+          payloadJson: {
+            orderNo: createdOrder.orderNo,
+          },
+          status: 'READY',
+          attemptCount: 0,
+          maxAttempts: 5,
+          nextRunAt: new Date().toISOString(),
+          lastError: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      },
+      async schedule() {
+        throw new Error('schedule should not be called in service test');
+      },
+      async processReadyJobs() {},
+      registerHandler() {},
+      listRegisteredJobTypes() {
+        return [];
+      },
+      async retry() {},
+      async cancel() {},
+      async listDeadLetters() {
+        return [];
+      },
+    };
+
+    const service = new OrdersService(
+      repository as never,
+      channelContract as never,
+      productContract as never,
+      riskContract as never,
+      ledgerContract as never,
+      workerContract as never,
+    );
+
+    const input = {
+      channelId: createdOrder.channelId,
+      channelOrderNo: createdOrder.channelOrderNo,
+      mobile: createdOrder.mobile,
+      faceValue: createdOrder.faceValue,
+      productType: createdOrder.requestedProductType,
+      extJson: {},
+      requestId: 'req-serialized',
+      clientIp: '127.0.0.1',
+    } as const;
+
+    const firstCreate = service.createOrder(input);
+    await debitStarted;
+
+    let secondResolved = false;
+    const secondCreate = service.createOrder(input).then((result) => {
+      secondResolved = true;
+      return result;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(secondResolved).toBe(false);
+
+    releaseDebit();
+
+    const [firstResult, secondResult] = await Promise.all([firstCreate, secondCreate]);
+
+    expect(firstResult.orderNo).toBe(createdOrder.orderNo);
+    expect(secondResult.orderNo).toBe(createdOrder.orderNo);
+    expect(createCalls).toBe(1);
     expect(debitCalls).toBe(1);
     expect(enqueueCalls).toBe(1);
   });

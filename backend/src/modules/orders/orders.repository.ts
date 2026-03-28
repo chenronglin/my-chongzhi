@@ -31,6 +31,17 @@ interface TimeoutExpiryTransition {
 }
 
 export class OrdersRepository {
+  async withCreateOrderLock<T>(
+    channelId: string,
+    channelOrderNo: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    return db.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${`order:create:${channelId}:${channelOrderNo}`}))`;
+      return callback();
+    });
+  }
+
   private mapOrder(row: OrderRecord): OrderRecord {
     return {
       ...row,

@@ -373,6 +373,85 @@ describe.serial('V1 ISP 充值下单链路', () => {
     expect(normalizeJsonLike(storedOrder?.extJson)).toEqual({});
   });
 
+  test('开放接口订单查询不会暴露内部敏感字段', async () => {
+    const body = {
+      channelOrderNo: `itest-open-dto-${Date.now()}`,
+      mobile: '13800130000',
+      faceValue: 50,
+      product_type: 'MIXED',
+      ext: {
+        clientMemo: 'visible-to-channel',
+      },
+    };
+
+    const createResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders({
+          path: '/open-api/orders',
+          body,
+        }),
+        body: JSON.stringify(body),
+      }),
+    );
+    const createJson = await readResponseJson(createResponse);
+    const orderNo = String(createJson.data.orderNo);
+
+    const getOrderResponse = await runtime.app.handle(
+      new Request(`http://localhost/open-api/orders/${orderNo}`, {
+        method: 'GET',
+        headers: buildSignedHeaders({
+          path: `/open-api/orders/${orderNo}`,
+          method: 'GET',
+        }),
+      }),
+    );
+    const getOrderJson = await readResponseJson(getOrderResponse);
+    const getEventsResponse = await runtime.app.handle(
+      new Request(`http://localhost/open-api/orders/${orderNo}/events`, {
+        method: 'GET',
+        headers: buildSignedHeaders({
+          path: `/open-api/orders/${orderNo}/events`,
+          method: 'GET',
+        }),
+      }),
+    );
+    const getEventsJson = await readResponseJson(getEventsResponse);
+
+    expect(createResponse.status).toBe(200);
+    expect(getOrderResponse.status).toBe(200);
+    expect(getEventsResponse.status).toBe(200);
+
+    expect(createJson.data.purchasePrice).toBeUndefined();
+    expect(createJson.data.supplierRouteSnapshotJson).toBeUndefined();
+    expect(createJson.data.riskSnapshotJson).toBeUndefined();
+    expect(createJson.data.callbackSnapshotJson).toBeUndefined();
+    expect(createJson.data.channelSnapshotJson).toBeUndefined();
+    expect(createJson.data.requestId).toBeUndefined();
+    expect(createJson.data.version).toBeUndefined();
+    expect(createJson.data.extJson).toEqual({
+      clientMemo: 'visible-to-channel',
+    });
+
+    expect(getOrderJson.data.purchasePrice).toBeUndefined();
+    expect(getOrderJson.data.supplierRouteSnapshotJson).toBeUndefined();
+    expect(getOrderJson.data.riskSnapshotJson).toBeUndefined();
+    expect(getOrderJson.data.callbackSnapshotJson).toBeUndefined();
+    expect(getOrderJson.data.channelSnapshotJson).toBeUndefined();
+    expect(getOrderJson.data.requestId).toBeUndefined();
+    expect(getOrderJson.data.version).toBeUndefined();
+    expect(getOrderJson.data.extJson).toEqual({
+      clientMemo: 'visible-to-channel',
+    });
+
+    expect(Array.isArray(getEventsJson.data)).toBe(true);
+    expect(getEventsJson.data[0]?.requestId).toBeUndefined();
+    expect(getEventsJson.data[0]?.operator).toBeUndefined();
+    expect(getEventsJson.data[0]?.sourceService).toBeUndefined();
+    expect(getEventsJson.data[0]?.idempotencyKey).toBeUndefined();
+    expect(getEventsJson.data[0]?.payloadJson).toBeUndefined();
+  });
+
   test('创建订单后处理 supplier.submit 不会因缺少供应商订单表而失败', async () => {
     const body = {
       channelOrderNo: `itest-worker-${Date.now()}`,

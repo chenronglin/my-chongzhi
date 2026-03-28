@@ -5,7 +5,12 @@ import type { LedgerContract } from '@/modules/ledger/contracts';
 import { NotificationsRepository } from '@/modules/notifications/notifications.repository';
 import type { OrderContract } from '@/modules/orders/contracts';
 import type { OrdersRepository } from '@/modules/orders/orders.repository';
-import type { OrderRecord } from '@/modules/orders/orders.types';
+import type {
+  OpenOrderEventRecord,
+  OpenOrderRecord,
+  OrderEventRecord,
+  OrderRecord,
+} from '@/modules/orders/orders.types';
 import type { ProductContract } from '@/modules/products/contracts';
 import type { RechargeProductType } from '@/modules/products/products.types';
 import type { RiskContract } from '@/modules/risk/contracts';
@@ -86,6 +91,51 @@ export class OrdersService implements OrderContract {
     return this.repository.listEvents(orderNo);
   }
 
+  toOpenOrderRecord(order: OrderRecord): OpenOrderRecord {
+    return {
+      orderNo: order.orderNo,
+      channelOrderNo: order.channelOrderNo,
+      mobile: order.mobile,
+      province: order.province,
+      ispName: order.ispName,
+      faceValue: order.faceValue,
+      matchedProductId: order.matchedProductId,
+      salePrice: order.salePrice,
+      currency: order.currency,
+      mainStatus: order.mainStatus,
+      supplierStatus: order.supplierStatus,
+      notifyStatus: order.notifyStatus,
+      refundStatus: order.refundStatus,
+      requestedProductType: order.requestedProductType,
+      extJson: order.extJson,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      finishedAt: order.finishedAt,
+    };
+  }
+
+  toOpenOrderEventRecord(event: OrderEventRecord): OpenOrderEventRecord {
+    return {
+      eventType: event.eventType,
+      sourceNo: event.sourceNo,
+      beforeStatusJson: event.beforeStatusJson,
+      afterStatusJson: event.afterStatusJson,
+      occurredAt: event.occurredAt,
+    };
+  }
+
+  async getOpenOrderByNoForChannel(channelId: string, orderNo: string): Promise<OpenOrderRecord> {
+    return this.toOpenOrderRecord(await this.getOrderByNoForChannel(channelId, orderNo));
+  }
+
+  async listOpenEventsForChannel(
+    channelId: string,
+    orderNo: string,
+  ): Promise<OpenOrderEventRecord[]> {
+    const events = await this.listEventsForChannel(channelId, orderNo);
+    return events.map((event) => this.toOpenOrderEventRecord(event));
+  }
+
   async createOrder(input: {
     channelId: string;
     channelOrderNo: string;
@@ -96,152 +146,154 @@ export class OrdersService implements OrderContract {
     requestId: string;
     clientIp: string;
   }) {
-    const existing = await this.repository.findByChannelOrder(
-      input.channelId,
-      input.channelOrderNo,
-    );
+    return this.repository.withCreateOrderLock(input.channelId, input.channelOrderNo, async () => {
+      const existing = await this.repository.findByChannelOrder(
+        input.channelId,
+        input.channelOrderNo,
+      );
 
-    if (existing) {
-      return existing;
-    }
-
-    const matched = await this.productContract.matchRechargeProduct({
-      mobile: input.mobile,
-      faceValue: input.faceValue,
-      productType: input.productType,
-    });
-    const policy = await this.channelContract.getOrderPolicy({
-      channelId: input.channelId,
-      productId: matched.product.id,
-      orderAmount: matched.product.faceValue,
-    });
-
-    if (!policy.pricePolicy) {
-      throw badRequest('渠道未配置销售价格');
-    }
-
-    const salePrice = Number(policy.pricePolicy.salePrice);
-
-    await this.ledgerContract.ensureBalanceSufficient({
-      channelId: input.channelId,
-      amount: salePrice,
-    });
-
-    const riskDecision = await this.riskContract.preCheck({
-      channelId: input.channelId,
-      amount: salePrice,
-      ip: input.clientIp,
-    });
-
-    if (riskDecision.decision !== 'PASS') {
-      throw forbidden(riskDecision.reason);
-    }
-
-    const now = Date.now();
-    const isFast = matched.product.productType === 'FAST';
-    const warningDeadlineAt = new Date(now + (isFast ? 10 : 150) * 60 * 1000);
-    const expireDeadlineAt = new Date(now + (isFast ? 60 : 180) * 60 * 1000);
-
-    let order: OrderRecord;
-
-    try {
-      order = await this.repository.createOrder({
-        channelOrderNo: input.channelOrderNo,
-        channelId: input.channelId,
-        parentChannelId: null,
-        mobile: matched.mobileContext.mobile,
-        province: matched.mobileContext.province,
-        ispName: matched.mobileContext.ispName,
-        faceValue: input.faceValue,
-        requestedProductType: input.productType ?? 'MIXED',
-        matchedProductId: matched.product.id,
-        salePrice,
-        purchasePrice: Number(matched.supplierCandidates[0]?.costPrice ?? 0),
-        mainStatus: 'CREATED',
-        supplierStatus: 'WAIT_SUBMIT',
-        notifyStatus: 'PENDING',
-        refundStatus: 'NONE',
-        monitorStatus: 'NORMAL',
-        warningDeadlineAt,
-        expireDeadlineAt,
-        channelSnapshotJson: {
-          channel: policy.channel,
-          pricePolicy: policy.pricePolicy,
-        },
-        productSnapshotJson: {
-          product: matched.product,
-        },
-        callbackSnapshotJson: {
-          callbackConfig: policy.callbackConfig,
-        },
-        supplierRouteSnapshotJson: {
-          supplierCandidates: matched.supplierCandidates,
-        },
-        riskSnapshotJson: {
-          ...riskDecision,
-        },
-        extJson: input.extJson ?? {},
-        requestId: input.requestId,
-      });
-    } catch (error) {
-      if (isUniqueConstraintViolation(error)) {
-        const conflictedOrder = await this.repository.findByChannelOrder(
-          input.channelId,
-          input.channelOrderNo,
-        );
-
-        if (conflictedOrder) {
-          return conflictedOrder;
-        }
+      if (existing) {
+        return existing;
       }
 
-      throw error;
-    }
-
-    await this.repository.addEvent({
-      orderNo: order.orderNo,
-      eventType: 'OrderCreated',
-      sourceService: 'orders',
-      sourceNo: null,
-      beforeStatusJson: {},
-      afterStatusJson: {
-        mainStatus: order.mainStatus,
-        supplierStatus: order.supplierStatus,
-        notifyStatus: order.notifyStatus,
-        refundStatus: order.refundStatus,
-      },
-      payloadJson: {
-        mobile: order.mobile,
-        faceValue: order.faceValue,
-        requestedProductType: order.requestedProductType,
-        matchedProductId: order.matchedProductId,
-        riskDecision,
-      },
-      idempotencyKey: `${input.channelId}:${input.channelOrderNo}`,
-      operator: 'SYSTEM',
-      requestId: input.requestId,
-    });
-
-    try {
-      await this.ledgerContract.debitOrderAmount({
-        channelId: order.channelId,
-        orderNo: order.orderNo,
-        amount: order.salePrice,
+      const matched = await this.productContract.matchRechargeProduct({
+        mobile: input.mobile,
+        faceValue: input.faceValue,
+        productType: input.productType,
       });
-    } catch (error) {
-      await this.repository.deleteOrder(order.orderNo);
-      throw error;
-    }
+      const policy = await this.channelContract.getOrderPolicy({
+        channelId: input.channelId,
+        productId: matched.product.id,
+        orderAmount: matched.product.faceValue,
+      });
 
-    await this.workerContract.enqueue({
-      jobType: 'supplier.submit',
-      businessKey: order.orderNo,
-      payload: {
+      if (!policy.pricePolicy) {
+        throw badRequest('渠道未配置销售价格');
+      }
+
+      const salePrice = Number(policy.pricePolicy.salePrice);
+
+      await this.ledgerContract.ensureBalanceSufficient({
+        channelId: input.channelId,
+        amount: salePrice,
+      });
+
+      const riskDecision = await this.riskContract.preCheck({
+        channelId: input.channelId,
+        amount: salePrice,
+        ip: input.clientIp,
+      });
+
+      if (riskDecision.decision !== 'PASS') {
+        throw forbidden(riskDecision.reason);
+      }
+
+      const now = Date.now();
+      const isFast = matched.product.productType === 'FAST';
+      const warningDeadlineAt = new Date(now + (isFast ? 10 : 150) * 60 * 1000);
+      const expireDeadlineAt = new Date(now + (isFast ? 60 : 180) * 60 * 1000);
+
+      let order: OrderRecord;
+
+      try {
+        order = await this.repository.createOrder({
+          channelOrderNo: input.channelOrderNo,
+          channelId: input.channelId,
+          parentChannelId: null,
+          mobile: matched.mobileContext.mobile,
+          province: matched.mobileContext.province,
+          ispName: matched.mobileContext.ispName,
+          faceValue: input.faceValue,
+          requestedProductType: input.productType ?? 'MIXED',
+          matchedProductId: matched.product.id,
+          salePrice,
+          purchasePrice: Number(matched.supplierCandidates[0]?.costPrice ?? 0),
+          mainStatus: 'CREATED',
+          supplierStatus: 'WAIT_SUBMIT',
+          notifyStatus: 'PENDING',
+          refundStatus: 'NONE',
+          monitorStatus: 'NORMAL',
+          warningDeadlineAt,
+          expireDeadlineAt,
+          channelSnapshotJson: {
+            channel: policy.channel,
+            pricePolicy: policy.pricePolicy,
+          },
+          productSnapshotJson: {
+            product: matched.product,
+          },
+          callbackSnapshotJson: {
+            callbackConfig: policy.callbackConfig,
+          },
+          supplierRouteSnapshotJson: {
+            supplierCandidates: matched.supplierCandidates,
+          },
+          riskSnapshotJson: {
+            ...riskDecision,
+          },
+          extJson: input.extJson ?? {},
+          requestId: input.requestId,
+        });
+      } catch (error) {
+        if (isUniqueConstraintViolation(error)) {
+          const conflictedOrder = await this.repository.findByChannelOrder(
+            input.channelId,
+            input.channelOrderNo,
+          );
+
+          if (conflictedOrder) {
+            return conflictedOrder;
+          }
+        }
+
+        throw error;
+      }
+
+      await this.repository.addEvent({
         orderNo: order.orderNo,
-      },
-    });
+        eventType: 'OrderCreated',
+        sourceService: 'orders',
+        sourceNo: null,
+        beforeStatusJson: {},
+        afterStatusJson: {
+          mainStatus: order.mainStatus,
+          supplierStatus: order.supplierStatus,
+          notifyStatus: order.notifyStatus,
+          refundStatus: order.refundStatus,
+        },
+        payloadJson: {
+          mobile: order.mobile,
+          faceValue: order.faceValue,
+          requestedProductType: order.requestedProductType,
+          matchedProductId: order.matchedProductId,
+          riskDecision,
+        },
+        idempotencyKey: `${input.channelId}:${input.channelOrderNo}`,
+        operator: 'SYSTEM',
+        requestId: input.requestId,
+      });
 
-    return this.getOrderByNo(order.orderNo);
+      try {
+        await this.ledgerContract.debitOrderAmount({
+          channelId: order.channelId,
+          orderNo: order.orderNo,
+          amount: order.salePrice,
+        });
+      } catch (error) {
+        await this.repository.deleteOrder(order.orderNo);
+        throw error;
+      }
+
+      await this.workerContract.enqueue({
+        jobType: 'supplier.submit',
+        businessKey: order.orderNo,
+        payload: {
+          orderNo: order.orderNo,
+        },
+      });
+
+      return this.getOrderByNo(order.orderNo);
+    });
   }
 
   async retryNotification(orderNo: string) {

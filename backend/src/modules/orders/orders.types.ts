@@ -73,3 +73,32 @@ export interface OrderEventRecord {
   requestId: string;
   occurredAt: string;
 }
+
+export interface OpenOrderRecord {
+  orderNo: string;
+  channelOrderNo: string;
+  mobile: string;
+  province: string | null;
+  ispName: string | null;
+  faceValue: number;
+  matchedProductId: string;
+  salePrice: number;
+  currency: string;
+  mainStatus: MainOrderStatus;
+  supplierStatus: SupplierOrderStatus;
+  notifyStatus: OrderNotifyStatus;
+  refundStatus: OrderRefundStatus;
+  requestedProductType: RequestedProductType;
+  extJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface OpenOrderEventRecord {
+  eventType: string;
+  sourceNo: string | null;
+  beforeStatusJson: Record<string, unknown>;
+  afterStatusJson: Record<string, unknown>;
+  occurredAt: string;
+}

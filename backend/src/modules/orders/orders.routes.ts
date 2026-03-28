@@ -41,16 +41,18 @@ export function createOrdersRoutes({
 
         return ok(
           requestId,
-          await ordersService.createOrder({
-            channelId: openAuth.channel.id,
-            channelOrderNo: body.channelOrderNo,
-            mobile: body.mobile,
-            faceValue: body.faceValue,
-            productType: body.product_type,
-            extJson: body.ext ?? {},
-            requestId,
-            clientIp,
-          }),
+          ordersService.toOpenOrderRecord(
+            await ordersService.createOrder({
+              channelId: openAuth.channel.id,
+              channelOrderNo: body.channelOrderNo,
+              mobile: body.mobile,
+              faceValue: body.faceValue,
+              productType: body.product_type,
+              extJson: body.ext ?? {},
+              requestId,
+              clientIp,
+            }),
+          ),
         );
       },
       {
@@ -75,7 +77,7 @@ export function createOrdersRoutes({
       });
       return ok(
         requestId,
-        await ordersService.getOrderByNoForChannel(openAuth.channel.id, params.orderNo),
+        await ordersService.getOpenOrderByNoForChannel(openAuth.channel.id, params.orderNo),
       );
     })
     .get('/:orderNo/events', async ({ params, request }) => {
@@ -91,7 +93,7 @@ export function createOrdersRoutes({
       });
       return ok(
         requestId,
-        await ordersService.listEventsForChannel(openAuth.channel.id, params.orderNo),
+        await ordersService.listOpenEventsForChannel(openAuth.channel.id, params.orderNo),
       );
     });
 
