@@ -80,18 +80,18 @@ export async function buildApp(options: BuildAppOptions = {}) {
   });
 
   // 统一注册 Worker 处理器。
-  workerModule.service.registerHandler('supplier.catalog.full-sync', (payload) =>
-    suppliersModule.service.syncFullCatalog({
+  workerModule.service.registerHandler('supplier.catalog.full-sync', async (payload) => {
+    await suppliersModule.service.syncFullCatalog({
       supplierCode: String(payload.supplierCode ?? ''),
       items: Array.isArray(payload.items) ? (payload.items as any[]) : [],
-    }),
-  );
-  workerModule.service.registerHandler('supplier.catalog.delta-sync', (payload) =>
-    suppliersModule.service.syncDynamicCatalog({
+    });
+  });
+  workerModule.service.registerHandler('supplier.catalog.delta-sync', async (payload) => {
+    await suppliersModule.service.syncDynamicCatalog({
       supplierCode: String(payload.supplierCode ?? ''),
       items: Array.isArray(payload.items) ? (payload.items as any[]) : [],
-    }),
-  );
+    });
+  });
   workerModule.service.registerHandler('supplier.submit', (payload) =>
     suppliersModule.service.submitOrder({
       orderNo: String(payload.orderNo ?? ''),
@@ -104,14 +104,14 @@ export async function buildApp(options: BuildAppOptions = {}) {
       attemptIndex: Number(payload.attemptIndex ?? 0),
     }),
   );
-  workerModule.service.registerHandler('supplier.reconcile.inflight', () =>
-    suppliersModule.service.runInflightReconcile(),
-  );
-  workerModule.service.registerHandler('supplier.reconcile.daily', (payload) =>
-    suppliersModule.service.runDailyReconcile({
+  workerModule.service.registerHandler('supplier.reconcile.inflight', async () => {
+    await suppliersModule.service.runInflightReconcile();
+  });
+  workerModule.service.registerHandler('supplier.reconcile.daily', async (payload) => {
+    await suppliersModule.service.runDailyReconcile({
       reconcileDate: typeof payload.reconcileDate === 'string' ? payload.reconcileDate : undefined,
-    }),
-  );
+    });
+  });
   workerModule.service.registerHandler('order.timeout.scan', async () => {
     // Task 5 only needs the scheduler registration restored. Timeout handling stays in orders.
   });
