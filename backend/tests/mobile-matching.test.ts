@@ -105,4 +105,140 @@ describe('ISP 充值商品匹配', () => {
 
     expect(matched.product.productType).toBe('FAST');
   });
+
+  test('未命中省份商品时回退到全国商品', async () => {
+    await db`
+      INSERT INTO product.recharge_products (
+        id,
+        product_code,
+        product_name,
+        carrier_code,
+        province_name,
+        face_value,
+        recharge_mode,
+        sales_unit,
+        status
+      )
+      VALUES (
+        'itest-product-cmcc-national-30',
+        'itest-cmcc-national-30',
+        '全国移动慢充 30 元',
+        'CMCC',
+        '全国',
+        30,
+        'MIXED',
+        'CNY',
+        'ACTIVE'
+      )
+    `;
+    await db`
+      INSERT INTO product.product_supplier_mappings (
+        id,
+        product_id,
+        supplier_id,
+        supplier_product_code,
+        route_type,
+        priority,
+        cost_price,
+        status
+      )
+      VALUES (
+        'itest-product-mapping-cmcc-national-30',
+        'itest-product-cmcc-national-30',
+        'seed-supplier-mock',
+        'itest-cmcc-national-30',
+        'PRIMARY',
+        1,
+        29,
+        'ACTIVE'
+      )
+    `;
+
+    const matched = await runtime.services.products.matchRechargeProduct({
+      mobile: '13800138000',
+      faceValue: 30,
+    });
+
+    expect(matched.product.productCode).toBe('itest-cmcc-national-30');
+    expect(matched.product.provinceName).toBe('全国');
+  });
+
+  test('命中多个有效商品时不会按创建时间静默兜底', async () => {
+    await db`
+      INSERT INTO product.recharge_products (
+        id,
+        product_code,
+        product_name,
+        carrier_code,
+        province_name,
+        face_value,
+        recharge_mode,
+        sales_unit,
+        status
+      )
+      VALUES
+        (
+          'itest-duplicate-product-1',
+          'itest-duplicate-1',
+          '广东移动慢充 80 元 A',
+          'CMCC',
+          '广东',
+          80,
+          'MIXED',
+          'CNY',
+          'ACTIVE'
+        ),
+        (
+          'itest-duplicate-product-2',
+          'itest-duplicate-2',
+          '广东移动慢充 80 元 B',
+          'CMCC',
+          '广东',
+          80,
+          'MIXED',
+          'CNY',
+          'ACTIVE'
+        )
+    `;
+    await db`
+      INSERT INTO product.product_supplier_mappings (
+        id,
+        product_id,
+        supplier_id,
+        supplier_product_code,
+        route_type,
+        priority,
+        cost_price,
+        status
+      )
+      VALUES
+        (
+          'itest-duplicate-mapping-1',
+          'itest-duplicate-product-1',
+          'seed-supplier-mock',
+          'itest-duplicate-1',
+          'PRIMARY',
+          1,
+          79,
+          'ACTIVE'
+        ),
+        (
+          'itest-duplicate-mapping-2',
+          'itest-duplicate-product-2',
+          'seed-supplier-mock',
+          'itest-duplicate-2',
+          'PRIMARY',
+          1,
+          79,
+          'ACTIVE'
+        )
+    `;
+
+    await expect(
+      runtime.services.products.matchRechargeProduct({
+        mobile: '13800138000',
+        faceValue: 80,
+      }),
+    ).rejects.toThrow('命中多个有效充值商品');
+  });
 });

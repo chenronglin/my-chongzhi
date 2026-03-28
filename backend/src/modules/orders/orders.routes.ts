@@ -64,7 +64,7 @@ export function createOrdersRoutes({
     )
     .get('/:orderNo', async ({ params, request }) => {
       const requestId = getRequestIdFromRequest(request);
-      await channelsService.authenticateOpenRequest({
+      const openAuth = await channelsService.authenticateOpenRequest({
         accessKey: request.headers.get('AccessKey') ?? '',
         signature: request.headers.get('Sign') ?? '',
         timestamp: request.headers.get('Timestamp') ?? '',
@@ -73,11 +73,14 @@ export function createOrdersRoutes({
         path: new URL(request.url).pathname,
         bodyText: '',
       });
-      return ok(requestId, await ordersService.getOrderByNo(params.orderNo));
+      return ok(
+        requestId,
+        await ordersService.getOrderByNoForChannel(openAuth.channel.id, params.orderNo),
+      );
     })
     .get('/:orderNo/events', async ({ params, request }) => {
       const requestId = getRequestIdFromRequest(request);
-      await channelsService.authenticateOpenRequest({
+      const openAuth = await channelsService.authenticateOpenRequest({
         accessKey: request.headers.get('AccessKey') ?? '',
         signature: request.headers.get('Sign') ?? '',
         timestamp: request.headers.get('Timestamp') ?? '',
@@ -86,7 +89,10 @@ export function createOrdersRoutes({
         path: new URL(request.url).pathname,
         bodyText: '',
       });
-      return ok(requestId, await ordersService.listEvents(params.orderNo));
+      return ok(
+        requestId,
+        await ordersService.listEventsForChannel(openAuth.channel.id, params.orderNo),
+      );
     });
 
   const adminRoutes = new Elysia({ prefix: '/admin/orders' })

@@ -5,7 +5,7 @@ export interface RechargeProduct {
   productCode: string;
   productName: string;
   carrierCode: string;
-  provinceName: string | null;
+  provinceName: string;
   faceValue: number;
   productType: RechargeProductType;
   salesUnit: string;

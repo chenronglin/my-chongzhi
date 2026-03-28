@@ -34,6 +34,16 @@ export class OrdersService implements OrderContract {
     return order;
   }
 
+  async getOrderByNoForChannel(channelId: string, orderNo: string): Promise<OrderRecord> {
+    const order = await this.repository.findByOrderNoAndChannel(channelId, orderNo);
+
+    if (!order) {
+      throw notFound('订单不存在');
+    }
+
+    return order;
+  }
+
   async getSupplierExecutionContext(orderNo: string) {
     return this.getOrderByNo(orderNo);
   }
@@ -47,6 +57,11 @@ export class OrdersService implements OrderContract {
   }
 
   async listEvents(orderNo: string) {
+    return this.repository.listEvents(orderNo);
+  }
+
+  async listEventsForChannel(channelId: string, orderNo: string) {
+    await this.getOrderByNoForChannel(channelId, orderNo);
     return this.repository.listEvents(orderNo);
   }
 

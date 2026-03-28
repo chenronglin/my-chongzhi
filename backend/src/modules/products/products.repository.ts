@@ -1,3 +1,4 @@
+import { conflict } from '@/lib/errors';
 import { db, first } from '@/lib/sql';
 import { productsSql } from '@/modules/products/products.sql';
 import type {
@@ -32,7 +33,7 @@ export class ProductsRepository {
     faceValue: number;
     productType: RechargeProductType;
   }): Promise<RechargeProduct | null> {
-    const row = await first<RechargeProduct>(db<RechargeProduct[]>`
+    const provinceMatches = await db<RechargeProduct[]>`
       SELECT
         id,
         product_code AS "productCode",
@@ -48,14 +49,47 @@ export class ProductsRepository {
         AND face_value = ${input.faceValue}
         AND recharge_mode = ${input.productType}
         AND status = 'ACTIVE'
-        AND (province_name = ${input.province} OR province_name IS NULL)
-      ORDER BY
-        CASE WHEN province_name = ${input.province} THEN 0 ELSE 1 END ASC,
-        created_at DESC
-      LIMIT 1
-    `);
+        AND province_name = ${input.province}
+      ORDER BY product_code ASC
+      LIMIT 2
+    `;
 
-    return row ? this.mapProduct(row) : null;
+    if (provinceMatches.length > 1) {
+      throw conflict('命中多个有效充值商品');
+    }
+
+    const provinceMatch = provinceMatches[0];
+
+    if (provinceMatch) {
+      return this.mapProduct(provinceMatch);
+    }
+
+    const nationalMatches = await db<RechargeProduct[]>`
+      SELECT
+        id,
+        product_code AS "productCode",
+        product_name AS "productName",
+        carrier_code AS "carrierCode",
+        province_name AS "provinceName",
+        face_value AS "faceValue",
+        recharge_mode AS "productType",
+        sales_unit AS "salesUnit",
+        status
+      FROM product.recharge_products
+      WHERE carrier_code = ${input.carrierCode}
+        AND face_value = ${input.faceValue}
+        AND recharge_mode = ${input.productType}
+        AND status = 'ACTIVE'
+        AND province_name = '全国'
+      ORDER BY product_code ASC
+      LIMIT 2
+    `;
+
+    if (nationalMatches.length > 1) {
+      throw conflict('命中多个有效充值商品');
+    }
+
+    return nationalMatches[0] ? this.mapProduct(nationalMatches[0]) : null;
   }
 
   async findProductById(productId: string): Promise<RechargeProduct | null> {
