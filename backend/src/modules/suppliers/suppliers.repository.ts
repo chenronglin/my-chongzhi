@@ -6,6 +6,7 @@ import { suppliersSql } from '@/modules/suppliers/suppliers.sql';
 import type {
   Supplier,
   SupplierCatalogItem,
+  SupplierConfig,
   SupplierDynamicItem,
   SupplierOrder,
   SupplierReconcileCandidate,
@@ -38,6 +39,13 @@ interface ReconcileCandidateRow {
 }
 
 export class SuppliersRepository {
+  private mapSupplierConfig(row: SupplierConfig): SupplierConfig {
+    return {
+      ...row,
+      configJson: parseJsonValue(row.configJson, {}),
+    };
+  }
+
   private mapSyncLog(row: SupplierSyncLog): SupplierSyncLog {
     return {
       ...row,
@@ -171,6 +179,23 @@ export class SuppliersRepository {
       WHERE supplier_code = ${supplierCode}
       LIMIT 1
     `);
+  }
+
+  async findConfigBySupplierId(supplierId: string): Promise<SupplierConfig | null> {
+    const row = await first<SupplierConfig>(db<SupplierConfig[]>`
+      SELECT
+        id,
+        supplier_id AS "supplierId",
+        config_json AS "configJson",
+        credential_encrypted AS "credentialEncrypted",
+        callback_secret_encrypted AS "callbackSecretEncrypted",
+        timeout_ms AS "timeoutMs"
+      FROM supplier.supplier_configs
+      WHERE supplier_id = ${supplierId}
+      LIMIT 1
+    `);
+
+    return row ? this.mapSupplierConfig(row) : null;
   }
 
   async upsertRechargeProduct(item: SupplierCatalogItem): Promise<ProductRecord> {
@@ -492,7 +517,9 @@ export class SuppliersRepository {
     supplierId: string | null;
     supplierCode: string;
     supplierOrderNo: string | null;
+    headersJson: Record<string, unknown>;
     bodyJson: Record<string, unknown>;
+    signatureValid: boolean;
     parsedStatus: string | null;
     idempotencyKey: string;
   }): Promise<void> {
@@ -514,9 +541,9 @@ export class SuppliersRepository {
         ${input.supplierId},
         ${input.supplierCode},
         ${input.supplierOrderNo},
-        '{}'::jsonb,
+        ${JSON.stringify(input.headersJson)},
         ${JSON.stringify(input.bodyJson)},
-        TRUE,
+        ${input.signatureValid},
         ${input.parsedStatus},
         ${input.idempotencyKey},
         NOW()

@@ -1,5 +1,7 @@
-import { badRequest, notFound } from '@/lib/errors';
+import { badRequest, notFound, unauthorized } from '@/lib/errors';
 import { eventBus } from '@/lib/event-bus';
+import { decryptText, safeEqual, signOpenApiPayload } from '@/lib/security';
+import { stableStringify } from '@/lib/utils';
 import type { OrderContract } from '@/modules/orders/contracts';
 import type { OrderRecord } from '@/modules/orders/orders.types';
 import type { SupplierContract } from '@/modules/suppliers/contracts';
@@ -283,52 +285,66 @@ export class SuppliersService implements SupplierContract {
   async handleSupplierCallback(
     supplierCode: string,
     input: {
-      supplierOrderNo: string;
-      status: 'SUCCESS' | 'FAIL';
-      reason?: string;
+      headers: Record<string, unknown>;
+      body: {
+        supplierOrderNo: string;
+        status: 'SUCCESS' | 'FAIL';
+        reason?: string;
+      };
     },
   ) {
     const supplier = await this.repository.findSupplierByCode(supplierCode);
+    const isSignatureValid = await this.verifySupplierCallbackSignature(
+      supplier?.id ?? null,
+      input.headers,
+      input.body,
+    );
     const supplierOrder = await this.repository.findSupplierOrderBySupplierOrderNo(
-      input.supplierOrderNo,
+      input.body.supplierOrderNo,
     );
 
     await this.repository.addCallbackLog({
       supplierId: supplier?.id ?? null,
       supplierCode,
-      supplierOrderNo: input.supplierOrderNo,
-      bodyJson: input,
-      parsedStatus: input.status,
-      idempotencyKey: `${input.supplierOrderNo}:${input.status}`,
+      supplierOrderNo: input.body.supplierOrderNo,
+      headersJson: input.headers,
+      bodyJson: input.body,
+      signatureValid: isSignatureValid,
+      parsedStatus: input.body.status,
+      idempotencyKey: `${input.body.supplierOrderNo}:${input.body.status}`,
     });
+
+    if (!isSignatureValid) {
+      throw unauthorized('供应商回调签名校验失败');
+    }
 
     if (!supplierOrder) {
       throw notFound('供应商订单不存在');
     }
 
-    if (input.status === 'SUCCESS') {
-      await this.repository.updateSupplierOrderStatus(input.supplierOrderNo, 'SUCCESS', {
+    if (input.body.status === 'SUCCESS') {
+      await this.repository.updateSupplierOrderStatus(input.body.supplierOrderNo, 'SUCCESS', {
         from: 'callback',
       });
       const order = await this.orderContract.getSupplierExecutionContext(supplierOrder.orderNo);
       await eventBus.publish('SupplierSucceeded', {
         orderNo: supplierOrder.orderNo,
         supplierId: supplierOrder.supplierId,
-        supplierOrderNo: input.supplierOrderNo,
+        supplierOrderNo: input.body.supplierOrderNo,
         costPrice: order.purchasePrice,
       });
       return;
     }
 
-    await this.repository.updateSupplierOrderStatus(input.supplierOrderNo, 'FAIL', {
+    await this.repository.updateSupplierOrderStatus(input.body.supplierOrderNo, 'FAIL', {
       from: 'callback',
-      reason: input.reason ?? 'callback fail',
+      reason: input.body.reason ?? 'callback fail',
     });
     await eventBus.publish('SupplierFailed', {
       orderNo: supplierOrder.orderNo,
       supplierId: supplierOrder.supplierId,
-      supplierOrderNo: input.supplierOrderNo,
-      reason: input.reason ?? 'callback fail',
+      supplierOrderNo: input.body.supplierOrderNo,
+      reason: input.body.reason ?? 'callback fail',
     });
   }
 
@@ -353,6 +369,35 @@ export class SuppliersService implements SupplierContract {
     }
 
     return primarySupplier;
+  }
+
+  private async verifySupplierCallbackSignature(
+    supplierId: string | null,
+    headers: Record<string, unknown>,
+    body: Record<string, unknown>,
+  ): Promise<boolean> {
+    if (!supplierId) {
+      return false;
+    }
+
+    const config = await this.repository.findConfigBySupplierId(supplierId);
+
+    if (!config) {
+      return false;
+    }
+
+    const providedSignature = String(headers.sign ?? '');
+
+    if (!providedSignature) {
+      return false;
+    }
+
+    const expectedSignature = signOpenApiPayload(
+      decryptText(config.callbackSecretEncrypted),
+      stableStringify(body),
+    );
+
+    return safeEqual(expectedSignature, providedSignature);
   }
 
   private buildDiffFromCandidate(

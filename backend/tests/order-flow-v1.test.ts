@@ -40,6 +40,19 @@ function buildSignedHeaders(input: {
   };
 }
 
+function buildSupplierCallbackHeaders(input: {
+  body: Record<string, unknown>;
+  secret?: string;
+  signature?: string;
+}) {
+  const bodyText = stableStringify(input.body);
+
+  return {
+    'content-type': 'application/json',
+    Sign: input.signature ?? signOpenApiPayload(input.secret ?? 'mock-supplier-callback', bodyText),
+  };
+}
+
 async function readResponseJson(response: Response) {
   const text = await response.text();
 
@@ -218,6 +231,27 @@ async function findSupplierOrder(orderNo: string) {
     WHERE order_no = ${orderNo}
     LIMIT 1
   `;
+}
+
+async function getLatestSupplierCallbackLog(supplierOrderNo: string) {
+  const rows = await db<
+    {
+      signatureValid: boolean;
+      parsedStatus: string | null;
+      headersJson: Record<string, unknown> | string;
+    }[]
+  >`
+    SELECT
+      signature_valid AS "signatureValid",
+      parsed_status AS "parsedStatus",
+      headers_json AS "headersJson"
+    FROM supplier.supplier_callback_logs
+    WHERE supplier_order_no = ${supplierOrderNo}
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `;
+
+  return rows[0] ?? null;
 }
 
 async function resetTestStateV1() {
@@ -405,6 +439,128 @@ describe.serial('V1 ISP 充值下单链路', () => {
     expect(order.supplierStatus).toBe('SUCCESS');
     expect(order.notifyStatus).toBe('SUCCESS');
     expect(ledgerEntries.map((entry) => entry.actionType)).toContain('ORDER_PROFIT');
+  });
+
+  test('有效供应商回调会被验签接受并推进成功状态', async () => {
+    const body = {
+      channelOrderNo: `itest-supplier-callback-success-${Date.now()}`,
+      mobile: '13800130000',
+      faceValue: 50,
+      product_type: 'MIXED',
+    };
+
+    const createResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders({
+          path: '/open-api/orders',
+          body,
+        }),
+        body: JSON.stringify(body),
+      }),
+    );
+    const createJson = await readResponseJson(createResponse);
+    const orderNo = String(createJson.data.orderNo);
+
+    await processWorkerRound();
+
+    const supplierOrders = await findSupplierOrder(orderNo);
+    const supplierOrderNo = supplierOrders[0]?.supplierOrderNo;
+    const callbackBody = {
+      supplierOrderNo: String(supplierOrderNo),
+      status: 'SUCCESS',
+    } as const;
+
+    expect(supplierOrderNo).toBeTruthy();
+
+    const callbackResponse = await runtime.app.handle(
+      new Request('http://localhost/callbacks/suppliers/mock-supplier', {
+        method: 'POST',
+        headers: buildSupplierCallbackHeaders({
+          body: callbackBody,
+        }),
+        body: JSON.stringify(callbackBody),
+      }),
+    );
+    const callbackJson = await readResponseJson(callbackResponse);
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+    const callbackLog = await getLatestSupplierCallbackLog(String(supplierOrderNo));
+    const callbackHeaders = normalizeJsonLike(callbackLog?.headersJson);
+
+    expect(callbackResponse.status).toBe(200);
+    expect(callbackJson.code).toBe(0);
+    expect(order.mainStatus).toBe('SUCCESS');
+    expect(order.supplierStatus).toBe('SUCCESS');
+    expect(callbackLog).toMatchObject({
+      signatureValid: true,
+      parsedStatus: 'SUCCESS',
+    });
+    expect(callbackHeaders).toMatchObject({
+      sign: signOpenApiPayload('mock-supplier-callback', stableStringify(callbackBody)),
+    });
+  });
+
+  test('无效供应商回调签名会被拒绝且仅记录为无效日志', async () => {
+    const body = {
+      channelOrderNo: `itest-supplier-callback-invalid-${Date.now()}`,
+      mobile: '13800130000',
+      faceValue: 50,
+      product_type: 'MIXED',
+    };
+
+    const createResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders({
+          path: '/open-api/orders',
+          body,
+        }),
+        body: JSON.stringify(body),
+      }),
+    );
+    const createJson = await readResponseJson(createResponse);
+    const orderNo = String(createJson.data.orderNo);
+
+    await processWorkerRound();
+
+    const supplierOrders = await findSupplierOrder(orderNo);
+    const supplierOrderNo = supplierOrders[0]?.supplierOrderNo;
+    const callbackBody = {
+      supplierOrderNo: String(supplierOrderNo),
+      status: 'FAIL',
+      reason: 'forged',
+    } as const;
+
+    expect(supplierOrderNo).toBeTruthy();
+
+    const callbackResponse = await runtime.app.handle(
+      new Request('http://localhost/callbacks/suppliers/mock-supplier', {
+        method: 'POST',
+        headers: buildSupplierCallbackHeaders({
+          body: callbackBody,
+          signature: 'bad-signature',
+        }),
+        body: JSON.stringify(callbackBody),
+      }),
+    );
+    const callbackText = await callbackResponse.text();
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+    const refreshedSupplierOrders = await findSupplierOrder(orderNo);
+    const callbackLog = await getLatestSupplierCallbackLog(String(supplierOrderNo));
+    const callbackHeaders = normalizeJsonLike(callbackLog?.headersJson);
+
+    expect(callbackResponse.status).toBe(401);
+    expect(callbackText).toContain('签名');
+    expect(order.mainStatus).toBe('PROCESSING');
+    expect(order.supplierStatus).toBe('ACCEPTED');
+    expect(refreshedSupplierOrders[0]?.standardStatus).toBe('ACCEPTED');
+    expect(callbackLog).toMatchObject({
+      signatureValid: false,
+      parsedStatus: 'FAIL',
+    });
+    expect(callbackHeaders).toMatchObject({
+      sign: 'bad-signature',
+    });
   });
 
   test('供应商失败后会退款并进入 REFUNDED', async () => {

@@ -17,6 +17,10 @@ interface SuppliersRoutesDeps {
   iamService: IamService;
 }
 
+function getHeadersJson(headers: Headers): Record<string, string> {
+  return Object.fromEntries(headers.entries());
+}
+
 export function createSuppliersRoutes({ suppliersService, iamService }: SuppliersRoutesDeps) {
   const adminRoutes = new Elysia()
     .get('/admin/suppliers', async ({ request }) => {
@@ -84,7 +88,10 @@ export function createSuppliersRoutes({ suppliersService, iamService }: Supplier
     '/:supplierCode',
     async ({ params, body, request }) => {
       const requestId = getRequestIdFromRequest(request);
-      await suppliersService.handleSupplierCallback(params.supplierCode, body);
+      await suppliersService.handleSupplierCallback(params.supplierCode, {
+        headers: getHeadersJson(request.headers),
+        body,
+      });
       return ok(requestId, { success: true });
     },
     {
