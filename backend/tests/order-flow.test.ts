@@ -92,7 +92,7 @@ afterAll(() => {
   runtime.stop();
 });
 
-describe('主交易链路', () => {
+describe.serial('主交易链路', () => {
   test('余额支付订单会先落账，再完成履约并成功通知', async () => {
     const skuRows = await db.unsafe<{ id: string }[]>(
       'SELECT id FROM product.product_skus ORDER BY created_at ASC LIMIT 1',
@@ -225,5 +225,39 @@ describe('主交易链路', () => {
     );
 
     expect(legacyResponse.status).toBe(404);
+  });
+
+  test('免费订单模式不再属于新基础设施', async () => {
+    const skuRows = await db.unsafe<{ id: string }[]>(
+      'SELECT id FROM product.product_skus ORDER BY created_at ASC LIMIT 1',
+    );
+    const skuId = skuRows[0]?.id;
+
+    expect(skuId).toBeTruthy();
+
+    const createBody = {
+      channelOrderNo: `free-${Date.now()}`,
+      skuId,
+      paymentMode: 'FREE',
+    };
+    const createResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders('/open-api/orders', createBody),
+        body: JSON.stringify(createBody),
+      }),
+    );
+
+    expect(createResponse.status).toBe(422);
+  });
+
+  test('初始化 migration 不再包含 payment bootstrap 残留', async () => {
+    const migrationText = await Bun.file(
+      '/Users/moses/Developer/Docs/.worktrees/isp-recharge-v1/backend/src/database/migrations/0001_init_schemas.sql',
+    ).text();
+
+    expect(migrationText.includes('CREATE SCHEMA IF NOT EXISTS payment')).toBe(false);
+    expect(migrationText.includes('payment.')).toBe(false);
+    expect(migrationText.includes('idx_payment')).toBe(false);
   });
 });

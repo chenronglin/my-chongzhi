@@ -556,9 +556,6 @@ CREATE INDEX IF NOT EXISTS idx_ordering_orders_channel_created
 CREATE INDEX IF NOT EXISTS idx_ordering_order_events_order_no
   ON ordering.order_events (order_no, occurred_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_payment_orders_order_no
-  ON payment.payment_orders (order_no);
-
 CREATE INDEX IF NOT EXISTS idx_supplier_orders_order_no
   ON supplier.supplier_orders (order_no);
 

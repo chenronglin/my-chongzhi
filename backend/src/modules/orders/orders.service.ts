@@ -111,7 +111,7 @@ export class OrdersService implements OrderContract {
     channelId: string;
     channelOrderNo: string;
     skuId: string;
-    paymentMode: 'BALANCE' | 'FREE';
+    paymentMode: 'BALANCE';
     extJson?: Record<string, unknown>;
     requestId: string;
     clientIp: string;
@@ -154,7 +154,7 @@ export class OrdersService implements OrderContract {
       costPrice: Number(snapshot.supplierCandidates[0]?.costPrice ?? snapshot.sku.baseCostPrice),
       paymentMode: input.paymentMode,
       mainStatus: riskDecision.decision === 'REVIEW' ? 'CREATED' : 'PENDING_PAYMENT',
-      paymentStatus: input.paymentMode === 'FREE' ? 'PAID' : 'UNPAID',
+      paymentStatus: 'UNPAID',
       supplierStatus: 'UNSUBMITTED',
       notifyStatus: 'PENDING',
       riskStatus: riskDecision.decision,
@@ -202,33 +202,20 @@ export class OrdersService implements OrderContract {
       return order;
     }
 
-    if (input.paymentMode === 'BALANCE') {
-      const funding = await this.ledgerContract.payByBalance({
-        channelId: order.channelId,
-        orderNo: order.orderNo,
-        amount: salePrice,
-      });
-
-      await this.markOrderPaid({
-        orderNo: order.orderNo,
-        paymentNo: funding.referenceNo,
-        paymentMode: input.paymentMode,
-        paidAmount: salePrice,
-        sourceService: 'ledger',
-        sourceNo: funding.referenceNo,
-        idempotencyKey: funding.referenceNo,
-      });
-
-      return this.getOrderByNo(order.orderNo);
-    }
+    const funding = await this.ledgerContract.payByBalance({
+      channelId: order.channelId,
+      orderNo: order.orderNo,
+      amount: salePrice,
+    });
 
     await this.markOrderPaid({
       orderNo: order.orderNo,
+      paymentNo: funding.referenceNo,
       paymentMode: input.paymentMode,
-      paidAmount: 0,
-      sourceService: 'orders',
-      sourceNo: order.orderNo,
-      idempotencyKey: `free:${order.orderNo}`,
+      paidAmount: salePrice,
+      sourceService: 'ledger',
+      sourceNo: funding.referenceNo,
+      idempotencyKey: funding.referenceNo,
     });
 
     return this.getOrderByNo(order.orderNo);
