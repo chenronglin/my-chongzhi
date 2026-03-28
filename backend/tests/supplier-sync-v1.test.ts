@@ -64,7 +64,7 @@ test('动态目录同步会刷新商品价格库存并记录同步日志', async
     ],
   });
 
-  const productRows = await db<
+  const mappingRows = await db<
     {
       salesStatus: string;
       purchasePrice: string;
@@ -74,11 +74,12 @@ test('动态目录同步会刷新商品价格库存并记录同步日志', async
   >`
     SELECT
       sales_status AS "salesStatus",
-      purchase_price::text AS "purchasePrice",
+      cost_price::text AS "purchasePrice",
       inventory_quantity AS "inventoryQuantity",
       dynamic_updated_at::text AS "dynamicUpdatedAt"
-    FROM product.recharge_products
-    WHERE product_code = 'cmcc-mixed-50'
+    FROM product.product_supplier_mappings
+    WHERE product_id = 'seed-product-cmcc-mixed-50'
+      AND supplier_id = 'seed-supplier-mock'
     LIMIT 1
   `;
   const logRows = await db<
@@ -97,12 +98,12 @@ test('动态目录同步会刷新商品价格库存并记录同步日志', async
     LIMIT 1
   `;
 
-  expect(productRows[0]).toMatchObject({
+  expect(mappingRows[0]).toMatchObject({
     salesStatus: 'ON_SALE',
     purchasePrice: '47.25',
     inventoryQuantity: 88,
   });
-  expect(productRows[0]?.dynamicUpdatedAt).toBeTruthy();
+  expect(mappingRows[0]?.dynamicUpdatedAt).toBeTruthy();
   expect(logRows[0]).toMatchObject({
     syncType: 'DYNAMIC',
     status: 'SUCCESS',
@@ -145,13 +146,11 @@ test('全量目录同步会退役供应商缺失商品映射并让商品下架',
   `;
   const productRows = await db<
     {
-      salesStatus: string;
-      inventoryQuantity: number;
+      status: string;
     }[]
   >`
     SELECT
-      sales_status AS "salesStatus",
-      inventory_quantity AS "inventoryQuantity"
+      status
     FROM product.recharge_products
     WHERE id = 'seed-product-cmcc-mixed-50'
     LIMIT 1
@@ -159,8 +158,7 @@ test('全量目录同步会退役供应商缺失商品映射并让商品下架',
 
   expect(mappingRows[0]?.status).toBe('INACTIVE');
   expect(productRows[0]).toMatchObject({
-    salesStatus: 'OFF_SALE',
-    inventoryQuantity: 0,
+    status: 'ACTIVE',
   });
   await expect(
     runtime.services.products.matchRechargeProduct({

@@ -243,6 +243,53 @@ describe('ISP 充值商品匹配', () => {
   });
 
   test('动态刷新将商品置为不可售后不会继续参与路由', async () => {
+    await db`
+      INSERT INTO supplier.suppliers (
+        id,
+        supplier_code,
+        supplier_name,
+        protocol_type,
+        status
+      )
+      VALUES (
+        'itest-supplier-alt',
+        'alt-supplier',
+        '备用供应商',
+        'MOCK',
+        'ACTIVE'
+      )
+      ON CONFLICT (supplier_code) DO NOTHING
+    `;
+    await db`
+      INSERT INTO product.product_supplier_mappings (
+        id,
+        product_id,
+        supplier_id,
+        supplier_product_code,
+        route_type,
+        priority,
+        cost_price,
+        sales_status,
+        inventory_quantity,
+        dynamic_updated_at,
+        status
+      )
+      VALUES (
+        'itest-mapping-fast-100-alt',
+        'seed-product-cmcc-fast-100',
+        'itest-supplier-alt',
+        'alt-fast-100',
+        'PRIMARY',
+        2,
+        94,
+        'ON_SALE',
+        50,
+        NOW(),
+        'ACTIVE'
+      )
+      ON CONFLICT (product_id, supplier_id) DO NOTHING
+    `;
+
     await runtime.services.suppliers.syncDynamicCatalog({
       supplierCode: 'mock-supplier',
       items: [
@@ -254,6 +301,55 @@ describe('ISP 充值商品匹配', () => {
         },
       ],
     });
+
+    const matched = await runtime.services.products.matchRechargeProduct({
+      mobile: '13800138000',
+      faceValue: 100,
+      productType: 'FAST',
+    });
+
+    expect(matched.product.productCode).toBe('cmcc-fast-100');
+    expect(matched.supplierCandidates).toHaveLength(1);
+    expect(matched.supplierCandidates[0]).toMatchObject({
+      supplierId: 'itest-supplier-alt',
+      supplierProductCode: 'alt-fast-100',
+    });
+  });
+
+  test('映射在 120 分钟内未刷新仍可售，超过 120 分钟后会被判定为过期', async () => {
+    await db`
+      UPDATE product.product_supplier_mappings
+      SET
+        status = 'INACTIVE'
+      WHERE product_id = 'seed-product-cmcc-fast-100'
+        AND supplier_id = 'itest-supplier-alt'
+    `;
+
+    await db`
+      UPDATE product.product_supplier_mappings
+      SET
+        sales_status = 'ON_SALE',
+        inventory_quantity = 100,
+        dynamic_updated_at = NOW() - INTERVAL '90 minutes'
+      WHERE product_id = 'seed-product-cmcc-fast-100'
+        AND supplier_id = 'seed-supplier-mock'
+    `;
+
+    const freshEnough = await runtime.services.products.matchRechargeProduct({
+      mobile: '13800138000',
+      faceValue: 100,
+      productType: 'FAST',
+    });
+
+    expect(freshEnough.supplierCandidates).toHaveLength(1);
+
+    await db`
+      UPDATE product.product_supplier_mappings
+      SET
+        dynamic_updated_at = NOW() - INTERVAL '121 minutes'
+      WHERE product_id = 'seed-product-cmcc-fast-100'
+        AND supplier_id = 'seed-supplier-mock'
+    `;
 
     await expect(
       runtime.services.products.matchRechargeProduct({

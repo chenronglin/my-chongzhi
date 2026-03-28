@@ -19,6 +19,7 @@ export class ProductsRepository {
     return {
       ...row,
       costPrice: Number(row.costPrice),
+      inventoryQuantity: Number(row.inventoryQuantity),
     };
   }
 
@@ -49,15 +50,15 @@ export class ProductsRepository {
         AND rp.face_value = ${input.faceValue}
         AND rp.recharge_mode = ${input.productType}
         AND rp.status = 'ACTIVE'
-        AND rp.sales_status = 'ON_SALE'
-        AND rp.inventory_quantity > 0
-        AND rp.dynamic_updated_at >= NOW() - INTERVAL '30 minutes'
         AND rp.province_name = ${input.province}
         AND EXISTS (
           SELECT 1
           FROM product.product_supplier_mappings AS psm
           WHERE psm.product_id = rp.id
             AND psm.status = 'ACTIVE'
+            AND psm.sales_status = 'ON_SALE'
+            AND psm.inventory_quantity > 0
+            AND psm.dynamic_updated_at >= NOW() - INTERVAL '120 minutes'
         )
       ORDER BY product_code ASC
       LIMIT 2
@@ -89,15 +90,15 @@ export class ProductsRepository {
         AND rp.face_value = ${input.faceValue}
         AND rp.recharge_mode = ${input.productType}
         AND rp.status = 'ACTIVE'
-        AND rp.sales_status = 'ON_SALE'
-        AND rp.inventory_quantity > 0
-        AND rp.dynamic_updated_at >= NOW() - INTERVAL '30 minutes'
         AND rp.province_name = '全国'
         AND EXISTS (
           SELECT 1
           FROM product.product_supplier_mappings AS psm
           WHERE psm.product_id = rp.id
             AND psm.status = 'ACTIVE'
+            AND psm.sales_status = 'ON_SALE'
+            AND psm.inventory_quantity > 0
+            AND psm.dynamic_updated_at >= NOW() - INTERVAL '120 minutes'
         )
       ORDER BY product_code ASC
       LIMIT 2
@@ -140,10 +141,16 @@ export class ProductsRepository {
         priority,
         route_type AS "routeType",
         cost_price AS "costPrice",
+        sales_status AS "salesStatus",
+        inventory_quantity AS "inventoryQuantity",
+        dynamic_updated_at AS "dynamicUpdatedAt",
         status
       FROM product.product_supplier_mappings
       WHERE product_id = ${productId}
         AND status = 'ACTIVE'
+        AND sales_status = 'ON_SALE'
+        AND inventory_quantity > 0
+        AND dynamic_updated_at >= NOW() - INTERVAL '120 minutes'
       ORDER BY priority ASC, created_at ASC
     `;
 

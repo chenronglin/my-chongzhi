@@ -184,10 +184,6 @@ export class SuppliersRepository {
         face_value,
         recharge_mode,
         sales_unit,
-        sales_status,
-        purchase_price,
-        inventory_quantity,
-        dynamic_updated_at,
         status,
         created_at,
         updated_at
@@ -201,10 +197,6 @@ export class SuppliersRepository {
         ${item.faceValue},
         ${item.rechargeMode},
         ${item.salesUnit ?? 'CNY'},
-        ${item.salesStatus ?? 'ON_SALE'},
-        ${item.purchasePrice},
-        ${item.inventoryQuantity},
-        NOW(),
         ${item.status ?? 'ACTIVE'},
         NOW(),
         NOW()
@@ -217,10 +209,6 @@ export class SuppliersRepository {
         face_value = EXCLUDED.face_value,
         recharge_mode = EXCLUDED.recharge_mode,
         sales_unit = EXCLUDED.sales_unit,
-        sales_status = EXCLUDED.sales_status,
-        purchase_price = EXCLUDED.purchase_price,
-        inventory_quantity = EXCLUDED.inventory_quantity,
-        dynamic_updated_at = EXCLUDED.dynamic_updated_at,
         status = EXCLUDED.status,
         updated_at = NOW()
       RETURNING id, product_code AS "productCode"
@@ -240,34 +228,21 @@ export class SuppliersRepository {
     item: SupplierDynamicItem;
   }): Promise<ProductRecord | null> {
     const rows = await db<ProductRecord[]>`
-      UPDATE product.recharge_products AS rp
+      UPDATE product.product_supplier_mappings AS psm
       SET
+        cost_price = ${input.item.purchasePrice},
         sales_status = ${input.item.salesStatus},
-        purchase_price = ${input.item.purchasePrice},
         inventory_quantity = ${input.item.inventoryQuantity},
         dynamic_updated_at = NOW(),
         updated_at = NOW()
-      FROM product.product_supplier_mappings AS psm
-      WHERE rp.id = psm.product_id
+      FROM product.recharge_products AS rp
+      WHERE psm.product_id = rp.id
         AND psm.supplier_id = ${input.supplierId}
         AND rp.product_code = ${input.item.productCode}
       RETURNING rp.id, rp.product_code AS "productCode"
     `;
 
-    const product = rows[0] ?? null;
-
-    if (product) {
-      await db`
-        UPDATE product.product_supplier_mappings
-        SET
-          cost_price = ${input.item.purchasePrice},
-          updated_at = NOW()
-        WHERE product_id = ${product.id}
-          AND supplier_id = ${input.supplierId}
-      `;
-    }
-
-    return product;
+    return rows[0] ?? null;
   }
 
   async upsertProductSupplierMapping(input: {
@@ -284,6 +259,9 @@ export class SuppliersRepository {
         route_type,
         priority,
         cost_price,
+        sales_status,
+        inventory_quantity,
+        dynamic_updated_at,
         status,
         created_at,
         updated_at
@@ -296,6 +274,9 @@ export class SuppliersRepository {
         ${input.item.routeType ?? 'PRIMARY'},
         ${input.item.priority ?? 1},
         ${input.item.purchasePrice},
+        ${input.item.salesStatus ?? 'ON_SALE'},
+        ${input.item.inventoryQuantity},
+        NOW(),
         ${input.item.mappingStatus ?? 'ACTIVE'},
         NOW(),
         NOW()
@@ -306,6 +287,9 @@ export class SuppliersRepository {
         route_type = EXCLUDED.route_type,
         priority = EXCLUDED.priority,
         cost_price = EXCLUDED.cost_price,
+        sales_status = EXCLUDED.sales_status,
+        inventory_quantity = EXCLUDED.inventory_quantity,
+        dynamic_updated_at = EXCLUDED.dynamic_updated_at,
         status = EXCLUDED.status,
         updated_at = NOW()
     `;
@@ -332,33 +316,13 @@ export class SuppliersRepository {
     await db`
       UPDATE product.product_supplier_mappings
       SET
+        sales_status = 'OFF_SALE',
+        inventory_quantity = 0,
+        dynamic_updated_at = NOW(),
         status = 'INACTIVE',
         updated_at = NOW()
       WHERE product_id = ${input.productId}
         AND supplier_id = ${input.supplierId}
-    `;
-  }
-
-  async countActiveMappingsByProductId(productId: string): Promise<number> {
-    const row = await first<{ total: number }>(db<{ total: number }[]>`
-      SELECT COUNT(*)::int AS total
-      FROM product.product_supplier_mappings
-      WHERE product_id = ${productId}
-        AND status = 'ACTIVE'
-    `);
-
-    return row?.total ?? 0;
-  }
-
-  async markProductUnavailable(productId: string): Promise<void> {
-    await db`
-      UPDATE product.recharge_products
-      SET
-        sales_status = 'OFF_SALE',
-        inventory_quantity = 0,
-        dynamic_updated_at = NOW(),
-        updated_at = NOW()
-      WHERE id = ${productId}
     `;
   }
 

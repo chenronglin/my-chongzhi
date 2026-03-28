@@ -20,5 +20,8 @@ export interface ProductSupplierMapping {
   priority: number;
   routeType: string;
   costPrice: number;
+  salesStatus: string;
+  inventoryQuantity: number;
+  dynamicUpdatedAt: string;
   status: string;
 }

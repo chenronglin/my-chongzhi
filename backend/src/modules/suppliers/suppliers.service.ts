@@ -77,14 +77,6 @@ export class SuppliersService implements SupplierContract {
           productId: mapping.productId,
           supplierId: supplier.id,
         });
-
-        const activeMappingCount = await this.repository.countActiveMappingsByProductId(
-          mapping.productId,
-        );
-
-        if (activeMappingCount === 0) {
-          await this.repository.markProductUnavailable(mapping.productId);
-        }
       }
 
       await this.repository.addProductSyncLog({
