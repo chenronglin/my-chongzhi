@@ -29,7 +29,6 @@ export interface ProfitRule {
   ruleName: string;
   channelId: string | null;
   productId: string | null;
-  skuId: string | null;
   configJson: Record<string, unknown>;
   status: string;
 }

@@ -43,7 +43,6 @@ export class LedgerRepository {
     ruleName: string;
     channelId?: string;
     productId?: string;
-    skuId?: string;
     configJson: Record<string, unknown>;
   }): Promise<ProfitRule> {
     const rows = await db<ProfitRule[]>`
@@ -52,7 +51,6 @@ export class LedgerRepository {
         rule_name,
         channel_id,
         product_id,
-        sku_id,
         config_json,
         status,
         created_at,
@@ -63,7 +61,6 @@ export class LedgerRepository {
         ${input.ruleName},
         ${input.channelId ?? null},
         ${input.productId ?? null},
-        ${input.skuId ?? null},
         ${JSON.stringify(input.configJson)},
         'ACTIVE',
         NOW(),
@@ -74,7 +71,6 @@ export class LedgerRepository {
         rule_name AS "ruleName",
         channel_id AS "channelId",
         product_id AS "productId",
-        sku_id AS "skuId",
         config_json AS "configJson",
         status
     `;

@@ -25,11 +25,17 @@ interface BuildAppOptions {
 
 function createLedgerContractProxy(getService: () => LedgerService): LedgerContract {
   return {
-    payByBalance(input) {
-      return getService().payByBalance(input);
+    ensureBalanceSufficient(input) {
+      return getService().ensureBalanceSufficient(input);
     },
-    refundOrderPayment(orderNo) {
-      return getService().refundOrderPayment(orderNo);
+    debitOrderAmount(input) {
+      return getService().debitOrderAmount(input);
+    },
+    refundOrderAmount(input) {
+      return getService().refundOrderAmount(input);
+    },
+    confirmOrderProfit(input) {
+      return getService().confirmOrderProfit(input);
     },
   };
 }
@@ -59,7 +65,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     channelsService: channelsModule.service,
     iamService: iamModule.service,
   });
-  const ledgerModule = createLedgerModule(iamModule.service, ordersModule.contract);
+  const ledgerModule = createLedgerModule(iamModule.service);
   ledgerServiceRef = ledgerModule.service;
 
   const suppliersModule = createSuppliersModule({
@@ -93,9 +99,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
   );
   eventBus.subscribe('SupplierFailed', (payload) =>
     ordersModule.service.handleSupplierFailed(payload),
-  );
-  eventBus.subscribe('SettlementTriggered', (payload) =>
-    ledgerModule.service.handleSettlementTriggered(payload.orderNo),
   );
   eventBus.subscribe('NotificationRequested', (payload) =>
     notificationsModule.service.handleNotificationRequested(payload),

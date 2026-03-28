@@ -35,7 +35,6 @@ export const ledgerSql = {
       rule_name AS "ruleName",
       channel_id AS "channelId",
       product_id AS "productId",
-      sku_id AS "skuId",
       config_json AS "configJson",
       status
     FROM ledger.profit_rules

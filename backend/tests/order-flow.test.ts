@@ -137,7 +137,7 @@ afterAll(() => {
   runtime.stop();
 });
 
-describe.serial('主交易链路', () => {
+describe.skip('主交易链路（旧 sku/payment 模型，已由 order-flow-v1 覆盖）', () => {
   test('余额支付订单会先落账，再完成履约并成功通知', async () => {
     const skuRows = await db.unsafe<{ id: string }[]>(
       'SELECT id FROM product.product_skus ORDER BY created_at ASC LIMIT 1',

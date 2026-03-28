@@ -2,30 +2,167 @@ import { generateBusinessNo, generateId } from '@/lib/id';
 import { db, first } from '@/lib/sql';
 import { parseJsonValue } from '@/lib/utils';
 import { ordersSql } from '@/modules/orders/orders.sql';
-import type { MainOrderStatus, OrderEventRecord, OrderRecord } from '@/modules/orders/orders.types';
+import type {
+  MainOrderStatus,
+  OrderEventRecord,
+  OrderMonitorStatus,
+  OrderNotifyStatus,
+  OrderRecord,
+  OrderRefundStatus,
+  RequestedProductType,
+  SupplierOrderStatus,
+} from '@/modules/orders/orders.types';
+
+const ORDER_META_KEY = '__orderMeta';
+
+interface PersistedOrderMeta {
+  parentChannelId: string | null;
+  requestedProductType: RequestedProductType;
+  refundStatus: OrderRefundStatus;
+  monitorStatus: OrderMonitorStatus;
+  exceptionTag: string | null;
+  remark: string | null;
+  warningDeadlineAt: string | null;
+  expireDeadlineAt: string | null;
+  channelSnapshotJson: Record<string, unknown>;
+  productSnapshotJson: Record<string, unknown>;
+  callbackSnapshotJson: Record<string, unknown>;
+  supplierRouteSnapshotJson: Record<string, unknown>;
+  riskSnapshotJson: Record<string, unknown>;
+}
+
+type OrderRow = Omit<
+  OrderRecord,
+  | 'parentChannelId'
+  | 'requestedProductType'
+  | 'refundStatus'
+  | 'monitorStatus'
+  | 'exceptionTag'
+  | 'remark'
+  | 'warningDeadlineAt'
+  | 'expireDeadlineAt'
+  | 'channelSnapshotJson'
+  | 'productSnapshotJson'
+  | 'callbackSnapshotJson'
+  | 'supplierRouteSnapshotJson'
+  | 'riskSnapshotJson'
+> & {
+  callbackUrl: string | null;
+};
 
 export class OrdersRepository {
-  private async lockOrderEventMutation(tx: typeof db, key: string): Promise<void> {
-    await tx`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  private parsePersistedExt(input: unknown): {
+    userExt: Record<string, unknown>;
+    meta: PersistedOrderMeta;
+  } {
+    const extJson = parseJsonValue<Record<string, unknown>>(input, {});
+    const metaSource = parseJsonValue<Partial<PersistedOrderMeta>>(extJson[ORDER_META_KEY], {});
+    const { [ORDER_META_KEY]: _discarded, ...userExt } = extJson;
+
+    return {
+      userExt,
+      meta: {
+        parentChannelId:
+          typeof metaSource.parentChannelId === 'string' ? metaSource.parentChannelId : null,
+        requestedProductType: metaSource.requestedProductType === 'FAST' ? 'FAST' : 'MIXED',
+        refundStatus: this.parseRefundStatus(metaSource.refundStatus),
+        monitorStatus: this.parseMonitorStatus(metaSource.monitorStatus),
+        exceptionTag: typeof metaSource.exceptionTag === 'string' ? metaSource.exceptionTag : null,
+        remark: typeof metaSource.remark === 'string' ? metaSource.remark : null,
+        warningDeadlineAt:
+          typeof metaSource.warningDeadlineAt === 'string' ? metaSource.warningDeadlineAt : null,
+        expireDeadlineAt:
+          typeof metaSource.expireDeadlineAt === 'string' ? metaSource.expireDeadlineAt : null,
+        channelSnapshotJson: parseJsonValue(metaSource.channelSnapshotJson, {}),
+        productSnapshotJson: parseJsonValue(metaSource.productSnapshotJson, {}),
+        callbackSnapshotJson: parseJsonValue(metaSource.callbackSnapshotJson, {}),
+        supplierRouteSnapshotJson: parseJsonValue(metaSource.supplierRouteSnapshotJson, {}),
+        riskSnapshotJson: parseJsonValue(metaSource.riskSnapshotJson, {}),
+      },
+    };
   }
 
-  private mapOrder(row: OrderRecord): OrderRecord {
+  private serializePersistedExt(
+    order: Pick<
+      OrderRecord,
+      | 'extJson'
+      | 'parentChannelId'
+      | 'requestedProductType'
+      | 'refundStatus'
+      | 'monitorStatus'
+      | 'exceptionTag'
+      | 'remark'
+      | 'warningDeadlineAt'
+      | 'expireDeadlineAt'
+      | 'channelSnapshotJson'
+      | 'productSnapshotJson'
+      | 'callbackSnapshotJson'
+      | 'supplierRouteSnapshotJson'
+      | 'riskSnapshotJson'
+    >,
+  ) {
     return {
-      ...row,
-      salePrice: Number(row.salePrice),
-      costPrice: Number(row.costPrice),
-      channelSnapshotJson: parseJsonValue(row.channelSnapshotJson, {}),
-      productSnapshotJson: parseJsonValue(row.productSnapshotJson, {}),
-      callbackSnapshotJson: parseJsonValue(row.callbackSnapshotJson, {}),
-      supplierRouteSnapshotJson: parseJsonValue(row.supplierRouteSnapshotJson, {}),
-      riskSnapshotJson: parseJsonValue(row.riskSnapshotJson, {}),
-      extJson: parseJsonValue(row.extJson, {}),
+      ...order.extJson,
+      [ORDER_META_KEY]: {
+        parentChannelId: order.parentChannelId,
+        requestedProductType: order.requestedProductType,
+        refundStatus: order.refundStatus,
+        monitorStatus: order.monitorStatus,
+        exceptionTag: order.exceptionTag,
+        remark: order.remark,
+        warningDeadlineAt: order.warningDeadlineAt,
+        expireDeadlineAt: order.expireDeadlineAt,
+        channelSnapshotJson: order.channelSnapshotJson,
+        productSnapshotJson: order.productSnapshotJson,
+        callbackSnapshotJson: order.callbackSnapshotJson,
+        supplierRouteSnapshotJson: order.supplierRouteSnapshotJson,
+        riskSnapshotJson: order.riskSnapshotJson,
+      } satisfies PersistedOrderMeta,
+    };
+  }
+
+  private parseRefundStatus(value: unknown): OrderRefundStatus {
+    return value === 'PENDING' || value === 'SUCCESS' || value === 'FAIL' ? value : 'NONE';
+  }
+
+  private parseMonitorStatus(value: unknown): OrderMonitorStatus {
+    return value === 'TIMEOUT_WARNING' ||
+      value === 'MANUAL_FOLLOWING' ||
+      value === 'LATE_CALLBACK_EXCEPTION'
+      ? value
+      : 'NORMAL';
+  }
+
+  private mapOrder(row: OrderRow): OrderRecord {
+    const persisted = this.parsePersistedExt(row.extJson);
+    const { callbackUrl: _callbackUrl, ...baseRow } = row;
+
+    return {
+      ...baseRow,
+      salePrice: Number(baseRow.salePrice),
+      purchasePrice: Number(baseRow.purchasePrice),
+      faceValue: Number(baseRow.faceValue),
+      parentChannelId: persisted.meta.parentChannelId,
+      requestedProductType: persisted.meta.requestedProductType,
+      refundStatus: persisted.meta.refundStatus,
+      monitorStatus: persisted.meta.monitorStatus,
+      exceptionTag: persisted.meta.exceptionTag,
+      remark: persisted.meta.remark,
+      channelSnapshotJson: persisted.meta.channelSnapshotJson,
+      productSnapshotJson: persisted.meta.productSnapshotJson,
+      callbackSnapshotJson: persisted.meta.callbackSnapshotJson,
+      supplierRouteSnapshotJson: persisted.meta.supplierRouteSnapshotJson,
+      riskSnapshotJson: persisted.meta.riskSnapshotJson,
+      extJson: persisted.userExt,
+      warningDeadlineAt: persisted.meta.warningDeadlineAt,
+      expireDeadlineAt: persisted.meta.expireDeadlineAt,
     };
   }
 
   private mapEvent(row: OrderEventRecord): OrderEventRecord {
     return {
       ...row,
+      idempotencyKey: row.idempotencyKey ?? null,
       beforeStatusJson: parseJsonValue(row.beforeStatusJson, {}),
       afterStatusJson: parseJsonValue(row.afterStatusJson, {}),
       payloadJson: parseJsonValue(row.payloadJson, {}),
@@ -33,43 +170,34 @@ export class OrdersRepository {
   }
 
   async listOrders(): Promise<OrderRecord[]> {
-    const rows = await db.unsafe<OrderRecord[]>(ordersSql.listOrders);
+    const rows = await db.unsafe<OrderRow[]>(ordersSql.listOrders);
     return rows.map((row) => this.mapOrder(row));
   }
 
   async findByOrderNo(orderNo: string): Promise<OrderRecord | null> {
-    const row = await first<OrderRecord>(db<OrderRecord[]>`
+    const row = await first<OrderRow>(db<OrderRow[]>`
       SELECT
         id,
         order_no AS "orderNo",
         channel_order_no AS "channelOrderNo",
         channel_id AS "channelId",
-        parent_channel_id AS "parentChannelId",
-        product_id AS "productId",
-        sku_id AS "skuId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
         sale_price AS "salePrice",
-        cost_price AS "costPrice",
+        cost_price AS "purchasePrice",
         currency,
-        payment_mode AS "paymentMode",
-        payment_no AS "paymentNo",
         main_status AS "mainStatus",
-        payment_status AS "paymentStatus",
         supplier_status AS "supplierStatus",
         notify_status AS "notifyStatus",
-        risk_status AS "riskStatus",
-        channel_snapshot_json AS "channelSnapshotJson",
-        product_snapshot_json AS "productSnapshotJson",
-        callback_snapshot_json AS "callbackSnapshotJson",
-        supplier_route_snapshot_json AS "supplierRouteSnapshotJson",
-        risk_snapshot_json AS "riskSnapshotJson",
+        callback_url AS "callbackUrl",
         ext_json AS "extJson",
-        exception_tag AS "exceptionTag",
-        remark,
         version,
         request_id AS "requestId",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
-        paid_at AS "paidAt",
         finished_at AS "finishedAt"
       FROM ordering.orders
       WHERE order_no = ${orderNo}
@@ -80,38 +208,29 @@ export class OrdersRepository {
   }
 
   async findByChannelOrder(channelId: string, channelOrderNo: string): Promise<OrderRecord | null> {
-    const row = await first<OrderRecord>(db<OrderRecord[]>`
+    const row = await first<OrderRow>(db<OrderRow[]>`
       SELECT
         id,
         order_no AS "orderNo",
         channel_order_no AS "channelOrderNo",
         channel_id AS "channelId",
-        parent_channel_id AS "parentChannelId",
-        product_id AS "productId",
-        sku_id AS "skuId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
         sale_price AS "salePrice",
-        cost_price AS "costPrice",
+        cost_price AS "purchasePrice",
         currency,
-        payment_mode AS "paymentMode",
-        payment_no AS "paymentNo",
         main_status AS "mainStatus",
-        payment_status AS "paymentStatus",
         supplier_status AS "supplierStatus",
         notify_status AS "notifyStatus",
-        risk_status AS "riskStatus",
-        channel_snapshot_json AS "channelSnapshotJson",
-        product_snapshot_json AS "productSnapshotJson",
-        callback_snapshot_json AS "callbackSnapshotJson",
-        supplier_route_snapshot_json AS "supplierRouteSnapshotJson",
-        risk_snapshot_json AS "riskSnapshotJson",
+        callback_url AS "callbackUrl",
         ext_json AS "extJson",
-        exception_tag AS "exceptionTag",
-        remark,
         version,
         request_id AS "requestId",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
-        paid_at AS "paidAt",
         finished_at AS "finishedAt"
       FROM ordering.orders
       WHERE channel_id = ${channelId}
@@ -126,16 +245,21 @@ export class OrdersRepository {
     channelOrderNo: string;
     channelId: string;
     parentChannelId?: string | null;
-    productId: string;
-    skuId: string;
+    mobile: string;
+    province: string;
+    ispName: string;
+    faceValue: number;
+    requestedProductType: RequestedProductType;
+    matchedProductId: string;
     salePrice: number;
-    costPrice: number;
-    paymentMode: string;
+    purchasePrice: number;
     mainStatus: MainOrderStatus;
-    paymentStatus: string;
-    supplierStatus: string;
-    notifyStatus: string;
-    riskStatus: string;
+    supplierStatus: SupplierOrderStatus;
+    notifyStatus: OrderNotifyStatus;
+    refundStatus: OrderRefundStatus;
+    monitorStatus: OrderMonitorStatus;
+    warningDeadlineAt: Date;
+    expireDeadlineAt: Date;
     channelSnapshotJson: Record<string, unknown>;
     productSnapshotJson: Record<string, unknown>;
     callbackSnapshotJson: Record<string, unknown>;
@@ -145,15 +269,37 @@ export class OrdersRepository {
     requestId: string;
   }): Promise<OrderRecord> {
     const orderNo = generateBusinessNo('order');
-    const rows = await db<OrderRecord[]>`
+    const persistedExtJson = this.serializePersistedExt({
+      extJson: input.extJson,
+      parentChannelId: input.parentChannelId ?? null,
+      requestedProductType: input.requestedProductType,
+      refundStatus: input.refundStatus,
+      monitorStatus: input.monitorStatus,
+      exceptionTag: null,
+      remark: null,
+      warningDeadlineAt: input.warningDeadlineAt.toISOString(),
+      expireDeadlineAt: input.expireDeadlineAt.toISOString(),
+      channelSnapshotJson: input.channelSnapshotJson,
+      productSnapshotJson: input.productSnapshotJson,
+      callbackSnapshotJson: input.callbackSnapshotJson,
+      supplierRouteSnapshotJson: input.supplierRouteSnapshotJson,
+      riskSnapshotJson: input.riskSnapshotJson,
+    });
+    const callbackConfig = parseJsonValue<Record<string, unknown>>(
+      input.callbackSnapshotJson.callbackConfig,
+      {},
+    );
+    const rows = await db<OrderRow[]>`
       INSERT INTO ordering.orders (
         id,
         order_no,
         channel_order_no,
         channel_id,
-        parent_channel_id,
         product_id,
-        sku_id,
+        mobile_number,
+        province_name,
+        isp_code,
+        face_value,
         sale_price,
         cost_price,
         currency,
@@ -163,14 +309,10 @@ export class OrdersRepository {
         supplier_status,
         notify_status,
         risk_status,
-        channel_snapshot_json,
-        product_snapshot_json,
-        callback_snapshot_json,
-        supplier_route_snapshot_json,
-        risk_snapshot_json,
+        callback_url,
+        request_id,
         ext_json,
         version,
-        request_id,
         created_at,
         updated_at
       )
@@ -179,26 +321,24 @@ export class OrdersRepository {
         ${orderNo},
         ${input.channelOrderNo},
         ${input.channelId},
-        ${input.parentChannelId ?? null},
-        ${input.productId},
-        ${input.skuId},
+        ${input.matchedProductId},
+        ${input.mobile},
+        ${input.province},
+        ${input.ispName},
+        ${input.faceValue},
         ${input.salePrice},
-        ${input.costPrice},
+        ${input.purchasePrice},
         'CNY',
-        ${input.paymentMode},
+        'BALANCE',
         ${input.mainStatus},
-        ${input.paymentStatus},
+        'PAID',
         ${input.supplierStatus},
         ${input.notifyStatus},
-        ${input.riskStatus},
-        ${JSON.stringify(input.channelSnapshotJson)},
-        ${JSON.stringify(input.productSnapshotJson)},
-        ${JSON.stringify(input.callbackSnapshotJson)},
-        ${JSON.stringify(input.supplierRouteSnapshotJson)},
-        ${JSON.stringify(input.riskSnapshotJson)},
-        ${JSON.stringify(input.extJson)},
-        1,
+        'PASS',
+        ${typeof callbackConfig.callbackUrl === 'string' ? callbackConfig.callbackUrl : null},
         ${input.requestId},
+        ${JSON.stringify(persistedExtJson)},
+        1,
         NOW(),
         NOW()
       )
@@ -207,32 +347,23 @@ export class OrdersRepository {
         order_no AS "orderNo",
         channel_order_no AS "channelOrderNo",
         channel_id AS "channelId",
-        parent_channel_id AS "parentChannelId",
-        product_id AS "productId",
-        sku_id AS "skuId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
         sale_price AS "salePrice",
-        cost_price AS "costPrice",
+        cost_price AS "purchasePrice",
         currency,
-        payment_mode AS "paymentMode",
-        payment_no AS "paymentNo",
         main_status AS "mainStatus",
-        payment_status AS "paymentStatus",
         supplier_status AS "supplierStatus",
         notify_status AS "notifyStatus",
-        risk_status AS "riskStatus",
-        channel_snapshot_json AS "channelSnapshotJson",
-        product_snapshot_json AS "productSnapshotJson",
-        callback_snapshot_json AS "callbackSnapshotJson",
-        supplier_route_snapshot_json AS "supplierRouteSnapshotJson",
-        risk_snapshot_json AS "riskSnapshotJson",
+        callback_url AS "callbackUrl",
         ext_json AS "extJson",
-        exception_tag AS "exceptionTag",
-        remark,
         version,
         request_id AS "requestId",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
-        paid_at AS "paidAt",
         finished_at AS "finishedAt"
     `;
 
@@ -249,14 +380,12 @@ export class OrdersRepository {
     orderNo: string,
     update: {
       mainStatus?: MainOrderStatus;
-      paymentStatus?: string;
-      supplierStatus?: string;
-      notifyStatus?: string;
-      riskStatus?: string;
-      paymentNo?: string | null;
+      supplierStatus?: SupplierOrderStatus;
+      notifyStatus?: OrderNotifyStatus;
+      refundStatus?: OrderRefundStatus;
+      monitorStatus?: OrderMonitorStatus;
       exceptionTag?: string | null;
       remark?: string | null;
-      paidAt?: boolean;
       finishedAt?: boolean;
     },
   ): Promise<void> {
@@ -266,18 +395,30 @@ export class OrdersRepository {
       throw new Error('订单不存在');
     }
 
+    const extJson = this.serializePersistedExt({
+      extJson: order.extJson,
+      parentChannelId: order.parentChannelId,
+      requestedProductType: order.requestedProductType,
+      refundStatus: update.refundStatus ?? order.refundStatus,
+      monitorStatus: update.monitorStatus ?? order.monitorStatus,
+      exceptionTag: update.exceptionTag ?? order.exceptionTag,
+      remark: update.remark ?? order.remark,
+      warningDeadlineAt: order.warningDeadlineAt,
+      expireDeadlineAt: order.expireDeadlineAt,
+      channelSnapshotJson: order.channelSnapshotJson,
+      productSnapshotJson: order.productSnapshotJson,
+      callbackSnapshotJson: order.callbackSnapshotJson,
+      supplierRouteSnapshotJson: order.supplierRouteSnapshotJson,
+      riskSnapshotJson: order.riskSnapshotJson,
+    });
+
     await db`
       UPDATE ordering.orders
       SET
         main_status = ${update.mainStatus ?? order.mainStatus},
-        payment_status = ${update.paymentStatus ?? order.paymentStatus},
         supplier_status = ${update.supplierStatus ?? order.supplierStatus},
         notify_status = ${update.notifyStatus ?? order.notifyStatus},
-        risk_status = ${update.riskStatus ?? order.riskStatus},
-        payment_no = COALESCE(${update.paymentNo ?? null}, payment_no),
-        exception_tag = COALESCE(${update.exceptionTag ?? null}, exception_tag),
-        remark = COALESCE(${update.remark ?? null}, remark),
-        paid_at = CASE WHEN ${update.paidAt ?? false} THEN NOW() ELSE paid_at END,
+        ext_json = ${JSON.stringify(extJson)},
         finished_at = CASE WHEN ${update.finishedAt ?? false} THEN NOW() ELSE finished_at END,
         version = version + 1,
         updated_at = NOW()
@@ -297,51 +438,34 @@ export class OrdersRepository {
     operator: string;
     requestId: string;
   }): Promise<void> {
-    await db.begin(async (tx) => {
-      await this.lockOrderEventMutation(tx, `order-event:${input.idempotencyKey}`);
-
-      const existing = await first<{ id: string }>(tx<{ id: string }[]>`
-        SELECT id
-        FROM ordering.order_events
-        WHERE idempotency_key = ${input.idempotencyKey}
-        LIMIT 1
-      `);
-
-      if (existing) {
-        return;
-      }
-
-      await tx`
-        INSERT INTO ordering.order_events (
-          id,
-          order_no,
-          event_type,
-          source_service,
-          source_no,
-          before_status_json,
-          after_status_json,
-          payload_json,
-          idempotency_key,
-          operator,
-          request_id,
-          occurred_at
-        )
-        VALUES (
-          ${generateId()},
-          ${input.orderNo},
-          ${input.eventType},
-          ${input.sourceService},
-          ${input.sourceNo ?? null},
-          ${JSON.stringify(input.beforeStatusJson)},
-          ${JSON.stringify(input.afterStatusJson)},
-          ${JSON.stringify(input.payloadJson)},
-          ${input.idempotencyKey},
-          ${input.operator},
-          ${input.requestId},
-          NOW()
-        )
-      `;
-    });
+    await db`
+      INSERT INTO ordering.order_events (
+        id,
+        order_no,
+        event_type,
+        source_service,
+        source_no,
+        before_status_json,
+        after_status_json,
+        payload_json,
+        operator,
+        request_id,
+        occurred_at
+      )
+      VALUES (
+        ${generateId()},
+        ${input.orderNo},
+        ${input.eventType},
+        ${input.sourceService},
+        ${input.sourceNo ?? null},
+        ${JSON.stringify(input.beforeStatusJson)},
+        ${JSON.stringify(input.afterStatusJson)},
+        ${JSON.stringify(input.payloadJson)},
+        ${input.operator},
+        ${input.requestId},
+        NOW()
+      )
+    `;
   }
 
   async listEvents(orderNo: string): Promise<OrderEventRecord[]> {
@@ -351,10 +475,6 @@ export class OrdersRepository {
 
   async deleteOrder(orderNo: string): Promise<void> {
     await db.begin(async (tx) => {
-      await tx`
-        DELETE FROM ordering.order_remarks
-        WHERE order_no = ${orderNo}
-      `;
       await tx`
         DELETE FROM ordering.order_events
         WHERE order_no = ${orderNo}
@@ -366,11 +486,7 @@ export class OrdersRepository {
     });
   }
 
-  async addRemark(orderNo: string, remark: string, operatorUserId: string | null): Promise<void> {
-    await db`
-      INSERT INTO ordering.order_remarks (id, order_no, remark, operator_user_id, created_at)
-      VALUES (${generateId()}, ${orderNo}, ${remark}, ${operatorUserId}, NOW())
-    `;
+  async addRemark(orderNo: string, remark: string, _operatorUserId: string | null): Promise<void> {
     await this.updateStatuses(orderNo, { remark });
   }
 }

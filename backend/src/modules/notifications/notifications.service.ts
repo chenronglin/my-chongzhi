@@ -34,9 +34,9 @@ export class NotificationsService {
     const payload = {
       orderNo: order.orderNo,
       mainStatus: order.mainStatus,
-      paymentStatus: order.paymentStatus,
       supplierStatus: order.supplierStatus,
       notifyStatus: order.notifyStatus,
+      refundStatus: order.refundStatus,
       triggerReason: input.triggerReason,
     };
     const destination = String(callbackConfig.callbackUrl ?? 'mock://success');

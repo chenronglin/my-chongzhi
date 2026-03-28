@@ -44,8 +44,9 @@ export function createOrdersRoutes({
           await ordersService.createOrder({
             channelId: openAuth.channel.id,
             channelOrderNo: body.channelOrderNo,
-            skuId: body.skuId,
-            paymentMode: body.paymentMode,
+            mobile: body.mobile,
+            faceValue: body.faceValue,
+            productType: body.product_type,
             extJson: body.ext ?? {},
             requestId,
             clientIp,
@@ -54,6 +55,11 @@ export function createOrdersRoutes({
       },
       {
         body: CreateOrderBodySchema,
+        detail: {
+          tags: ['open-api'],
+          summary: '创建充值订单',
+          description: '渠道侧使用手机号、面值与充值类型创建 ISP 充值订单。',
+        },
       },
     )
     .get('/:orderNo', async ({ params, request }) => {

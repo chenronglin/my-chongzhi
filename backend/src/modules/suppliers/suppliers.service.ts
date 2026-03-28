@@ -61,7 +61,7 @@ export class SuppliersService {
       supplierId: String(primarySupplier.supplierId),
       requestPayloadJson: {
         orderNo,
-        skuId: order.skuId,
+        productId: order.matchedProductId,
       },
       responsePayloadJson: {
         accepted: true,
@@ -119,7 +119,7 @@ export class SuppliersService {
       orderNo,
       supplierId: supplierOrder.supplierId,
       supplierOrderNo,
-      costPrice: order.costPrice,
+      costPrice: order.purchasePrice,
     });
   }
 
@@ -158,7 +158,7 @@ export class SuppliersService {
         orderNo: supplierOrder.orderNo,
         supplierId: supplierOrder.supplierId,
         supplierOrderNo: input.supplierOrderNo,
-        costPrice: order.costPrice,
+        costPrice: order.purchasePrice,
       });
       return;
     }

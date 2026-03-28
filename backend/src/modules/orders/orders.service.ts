@@ -1,4 +1,4 @@
-import { forbidden, notFound } from '@/lib/errors';
+import { badRequest, forbidden, notFound } from '@/lib/errors';
 import { eventBus } from '@/lib/event-bus';
 import type { ChannelContract } from '@/modules/channels/contracts';
 import type { LedgerContract } from '@/modules/ledger/contracts';
@@ -6,6 +6,7 @@ import type { OrderContract } from '@/modules/orders/contracts';
 import type { OrdersRepository } from '@/modules/orders/orders.repository';
 import type { OrderRecord } from '@/modules/orders/orders.types';
 import type { ProductContract } from '@/modules/products/contracts';
+import type { RechargeProductType } from '@/modules/products/products.types';
 import type { RiskContract } from '@/modules/risk/contracts';
 import type { WorkerContract } from '@/modules/worker/contracts';
 
@@ -18,64 +19,6 @@ export class OrdersService implements OrderContract {
     private readonly ledgerContract: LedgerContract,
     private readonly workerContract: WorkerContract,
   ) {}
-
-  private async markOrderPaid(input: {
-    orderNo: string;
-    paymentNo?: string | null;
-    paymentMode: string;
-    paidAmount: number;
-    sourceService: string;
-    sourceNo?: string | null;
-    idempotencyKey: string;
-  }) {
-    const order = await this.getOrderByNo(input.orderNo);
-
-    if (
-      ['SUCCESS', 'REFUNDED', 'CLOSED'].includes(order.mainStatus) ||
-      (order.paymentStatus === 'PAID' && order.mainStatus !== 'PENDING_PAYMENT')
-    ) {
-      return;
-    }
-
-    await this.repository.updateStatuses(order.orderNo, {
-      ...(input.paymentNo ? { paymentNo: input.paymentNo } : {}),
-      paymentStatus: 'PAID',
-      mainStatus: 'WAIT_SUPPLIER_SUBMIT',
-      paidAt: true,
-    });
-
-    await this.repository.addEvent({
-      orderNo: order.orderNo,
-      eventType: 'PaymentSucceeded',
-      sourceService: input.sourceService,
-      sourceNo: input.sourceNo ?? null,
-      beforeStatusJson: {
-        mainStatus: order.mainStatus,
-        paymentStatus: order.paymentStatus,
-      },
-      afterStatusJson: {
-        mainStatus: 'WAIT_SUPPLIER_SUBMIT',
-        paymentStatus: 'PAID',
-      },
-      payloadJson: {
-        paymentMode: input.paymentMode,
-        paidAmount: input.paidAmount,
-        sourceService: input.sourceService,
-        sourceNo: input.sourceNo ?? null,
-      },
-      idempotencyKey: input.idempotencyKey,
-      operator: 'SYSTEM',
-      requestId: order.requestId,
-    });
-
-    await this.workerContract.enqueue({
-      jobType: 'supplier.submit',
-      businessKey: order.orderNo,
-      payload: {
-        orderNo: order.orderNo,
-      },
-    });
-  }
 
   async listOrders() {
     return this.repository.listOrders();
@@ -110,8 +53,9 @@ export class OrdersService implements OrderContract {
   async createOrder(input: {
     channelId: string;
     channelOrderNo: string;
-    skuId: string;
-    paymentMode: 'BALANCE';
+    mobile: string;
+    faceValue: number;
+    productType?: RechargeProductType;
     extJson?: Record<string, unknown>;
     requestId: string;
     clientIp: string;
@@ -125,52 +69,74 @@ export class OrdersService implements OrderContract {
       return existing;
     }
 
-    const snapshot = await this.productContract.getSkuOrderSnapshot(input.skuId);
-    const orderAmount = Number(snapshot.sku.baseSalePrice);
+    const matched = await this.productContract.matchRechargeProduct({
+      mobile: input.mobile,
+      faceValue: input.faceValue,
+      productType: input.productType,
+    });
     const policy = await this.channelContract.getOrderPolicy({
       channelId: input.channelId,
-      productId: snapshot.product.id,
-      skuId: snapshot.sku.id,
-      orderAmount,
+      productId: matched.product.id,
+      orderAmount: matched.product.faceValue,
     });
-    const salePrice = Number(policy.pricePolicy?.salePrice ?? snapshot.sku.baseSalePrice);
+
+    if (!policy.pricePolicy) {
+      throw badRequest('渠道未配置销售价格');
+    }
+
+    const salePrice = Number(policy.pricePolicy.salePrice);
+
+    await this.ledgerContract.ensureBalanceSufficient({
+      channelId: input.channelId,
+      amount: salePrice,
+    });
+
     const riskDecision = await this.riskContract.preCheck({
       channelId: input.channelId,
       amount: salePrice,
       ip: input.clientIp,
     });
 
-    if (riskDecision.decision === 'REJECT') {
+    if (riskDecision.decision !== 'PASS') {
       throw forbidden(riskDecision.reason);
     }
+
+    const now = Date.now();
+    const isFast = matched.product.productType === 'FAST';
+    const warningDeadlineAt = new Date(now + (isFast ? 10 : 150) * 60 * 1000);
+    const expireDeadlineAt = new Date(now + (isFast ? 60 : 180) * 60 * 1000);
 
     const order = await this.repository.createOrder({
       channelOrderNo: input.channelOrderNo,
       channelId: input.channelId,
-      parentChannelId: policy.channel.parentChannelId,
-      productId: snapshot.product.id,
-      skuId: snapshot.sku.id,
+      parentChannelId: null,
+      mobile: matched.mobileContext.mobile,
+      province: matched.mobileContext.province,
+      ispName: matched.mobileContext.ispName,
+      faceValue: input.faceValue,
+      requestedProductType: input.productType ?? 'MIXED',
+      matchedProductId: matched.product.id,
       salePrice,
-      costPrice: Number(snapshot.supplierCandidates[0]?.costPrice ?? snapshot.sku.baseCostPrice),
-      paymentMode: input.paymentMode,
-      mainStatus: riskDecision.decision === 'REVIEW' ? 'CREATED' : 'PENDING_PAYMENT',
-      paymentStatus: 'UNPAID',
-      supplierStatus: 'UNSUBMITTED',
+      purchasePrice: Number(matched.supplierCandidates[0]?.costPrice ?? 0),
+      mainStatus: 'CREATED',
+      supplierStatus: 'WAIT_SUBMIT',
       notifyStatus: 'PENDING',
-      riskStatus: riskDecision.decision,
+      refundStatus: 'NONE',
+      monitorStatus: 'NORMAL',
+      warningDeadlineAt,
+      expireDeadlineAt,
       channelSnapshotJson: {
         channel: policy.channel,
         pricePolicy: policy.pricePolicy,
       },
       productSnapshotJson: {
-        product: snapshot.product,
-        sku: snapshot.sku,
+        product: matched.product,
       },
       callbackSnapshotJson: {
         callbackConfig: policy.callbackConfig,
       },
       supplierRouteSnapshotJson: {
-        supplierCandidates: snapshot.supplierCandidates,
+        supplierCandidates: matched.supplierCandidates,
       },
       riskSnapshotJson: {
         ...riskDecision,
@@ -187,10 +153,15 @@ export class OrdersService implements OrderContract {
       beforeStatusJson: {},
       afterStatusJson: {
         mainStatus: order.mainStatus,
-        paymentStatus: order.paymentStatus,
+        supplierStatus: order.supplierStatus,
+        notifyStatus: order.notifyStatus,
+        refundStatus: order.refundStatus,
       },
       payloadJson: {
-        paymentMode: input.paymentMode,
+        mobile: order.mobile,
+        faceValue: order.faceValue,
+        requestedProductType: order.requestedProductType,
+        matchedProductId: order.matchedProductId,
         riskDecision,
       },
       idempotencyKey: `${input.channelId}:${input.channelOrderNo}`,
@@ -198,31 +169,23 @@ export class OrdersService implements OrderContract {
       requestId: input.requestId,
     });
 
-    if (riskDecision.decision === 'REVIEW') {
-      return order;
-    }
-
-    let funding: Awaited<ReturnType<LedgerContract['payByBalance']>>;
-
     try {
-      funding = await this.ledgerContract.payByBalance({
+      await this.ledgerContract.debitOrderAmount({
         channelId: order.channelId,
         orderNo: order.orderNo,
-        amount: salePrice,
+        amount: order.salePrice,
       });
     } catch (error) {
       await this.repository.deleteOrder(order.orderNo);
       throw error;
     }
 
-    await this.markOrderPaid({
-      orderNo: order.orderNo,
-      paymentNo: funding.referenceNo,
-      paymentMode: input.paymentMode,
-      paidAmount: salePrice,
-      sourceService: 'ledger',
-      sourceNo: funding.referenceNo,
-      idempotencyKey: funding.referenceNo,
+    await this.workerContract.enqueue({
+      jobType: 'supplier.submit',
+      businessKey: order.orderNo,
+      payload: {
+        orderNo: order.orderNo,
+      },
     });
 
     return this.getOrderByNo(order.orderNo);
@@ -233,6 +196,7 @@ export class OrdersService implements OrderContract {
 
     await this.repository.updateStatuses(orderNo, {
       mainStatus: 'CLOSED',
+      finishedAt: true,
     });
     await this.repository.addEvent({
       orderNo,
@@ -292,8 +256,8 @@ export class OrdersService implements OrderContract {
     }
 
     await this.repository.updateStatuses(order.orderNo, {
-      mainStatus: 'SUPPLIER_PROCESSING',
-      supplierStatus: payload.status,
+      mainStatus: 'PROCESSING',
+      supplierStatus: payload.status === 'PROCESSING' ? 'QUERYING' : 'ACCEPTED',
     });
     await this.repository.addEvent({
       orderNo: order.orderNo,
@@ -305,8 +269,8 @@ export class OrdersService implements OrderContract {
         supplierStatus: order.supplierStatus,
       },
       afterStatusJson: {
-        mainStatus: 'SUPPLIER_PROCESSING',
-        supplierStatus: payload.status,
+        mainStatus: 'PROCESSING',
+        supplierStatus: payload.status === 'PROCESSING' ? 'QUERYING' : 'ACCEPTED',
       },
       payloadJson: payload,
       idempotencyKey: `${payload.supplierOrderNo}:${payload.status}`,
@@ -352,9 +316,10 @@ export class OrdersService implements OrderContract {
       requestId: order.requestId,
     });
 
-    await eventBus.publish('SettlementTriggered', {
+    await this.ledgerContract.confirmOrderProfit({
       orderNo: order.orderNo,
-      actionType: 'ORDER_SUCCESS',
+      salePrice: order.salePrice,
+      purchasePrice: payload.costPrice || order.purchasePrice,
     });
     await eventBus.publish('NotificationRequested', {
       orderNo: order.orderNo,
@@ -376,45 +341,42 @@ export class OrdersService implements OrderContract {
       return;
     }
 
-    if (order.paymentStatus === 'PAID') {
-      await this.repository.updateStatuses(order.orderNo, {
+    await this.repository.updateStatuses(order.orderNo, {
+      mainStatus: 'REFUNDING',
+      supplierStatus: 'FAIL',
+      refundStatus: 'PENDING',
+    });
+    await this.repository.addEvent({
+      orderNo: order.orderNo,
+      eventType: 'SupplierFailed',
+      sourceService: 'suppliers',
+      sourceNo: payload.supplierOrderNo,
+      beforeStatusJson: {
+        mainStatus: order.mainStatus,
+        supplierStatus: order.supplierStatus,
+        refundStatus: order.refundStatus,
+      },
+      afterStatusJson: {
         mainStatus: 'REFUNDING',
         supplierStatus: 'FAIL',
-      });
-      await this.repository.addEvent({
-        orderNo: order.orderNo,
-        eventType: 'SupplierFailed',
-        sourceService: 'suppliers',
-        sourceNo: payload.supplierOrderNo,
-        beforeStatusJson: {
-          mainStatus: order.mainStatus,
-          supplierStatus: order.supplierStatus,
-        },
-        afterStatusJson: {
-          mainStatus: 'REFUNDING',
-          supplierStatus: 'FAIL',
-        },
-        payloadJson: payload,
-        idempotencyKey: `${payload.supplierOrderNo}:FAIL`,
-        operator: 'SYSTEM',
-        requestId: order.requestId,
-      });
+        refundStatus: 'PENDING',
+      },
+      payloadJson: payload,
+      idempotencyKey: `${payload.supplierOrderNo}:FAIL`,
+      operator: 'SYSTEM',
+      requestId: order.requestId,
+    });
 
-      const refund = await this.ledgerContract.refundOrderPayment(order.orderNo);
+    const refund = await this.ledgerContract.refundOrderAmount({
+      channelId: order.channelId,
+      orderNo: order.orderNo,
+      amount: order.salePrice,
+    });
 
-      await this.handleRefundSucceeded({
-        orderNo: order.orderNo,
-        sourceService: 'ledger',
-        sourceNo: refund.referenceNo,
-      });
-
-      return;
-    }
-
-    await this.repository.updateStatuses(order.orderNo, {
-      mainStatus: 'FAIL',
-      supplierStatus: 'FAIL',
-      finishedAt: true,
+    await this.handleRefundSucceeded({
+      orderNo: order.orderNo,
+      sourceService: 'ledger',
+      sourceNo: refund.referenceNo,
     });
   }
 
@@ -431,6 +393,7 @@ export class OrdersService implements OrderContract {
 
     await this.repository.updateStatuses(order.orderNo, {
       mainStatus: 'REFUNDED',
+      refundStatus: 'SUCCESS',
       finishedAt: true,
     });
 
@@ -441,9 +404,11 @@ export class OrdersService implements OrderContract {
       sourceNo: payload.sourceNo ?? null,
       beforeStatusJson: {
         mainStatus: order.mainStatus,
+        refundStatus: order.refundStatus,
       },
       afterStatusJson: {
         mainStatus: 'REFUNDED',
+        refundStatus: 'SUCCESS',
       },
       payloadJson: payload,
       idempotencyKey: payload.sourceNo ?? `refund:${order.orderNo}`,
@@ -485,7 +450,7 @@ export class OrdersService implements OrderContract {
   async handleNotificationFailed(payload: { orderNo: string; taskNo: string; reason: string }) {
     const order = await this.getOrderByNo(payload.orderNo);
     await this.repository.updateStatuses(order.orderNo, {
-      notifyStatus: 'FAIL',
+      notifyStatus: 'DEAD_LETTER',
     });
     await this.repository.addEvent({
       orderNo: order.orderNo,
@@ -496,7 +461,7 @@ export class OrdersService implements OrderContract {
         notifyStatus: order.notifyStatus,
       },
       afterStatusJson: {
-        notifyStatus: 'FAIL',
+        notifyStatus: 'DEAD_LETTER',
       },
       payloadJson: payload,
       idempotencyKey: `${payload.taskNo}:FAIL`,

@@ -3,7 +3,6 @@ import type { LedgerContract } from '@/modules/ledger/contracts';
 import { LedgerRepository } from '@/modules/ledger/ledger.repository';
 import { createLedgerRoutes } from '@/modules/ledger/ledger.routes';
 import { LedgerService } from '@/modules/ledger/ledger.service';
-import type { OrderContract } from '@/modules/orders/contracts';
 
 export interface LedgerModule {
   service: LedgerService;
@@ -11,12 +10,9 @@ export interface LedgerModule {
   routes: ReturnType<typeof createLedgerRoutes>;
 }
 
-export function createLedgerModule(
-  iamService: IamService,
-  orderContract: OrderContract,
-): LedgerModule {
+export function createLedgerModule(iamService: IamService): LedgerModule {
   const repository = new LedgerRepository();
-  const service = new LedgerService(repository, orderContract);
+  const service = new LedgerService(repository);
 
   return {
     service,
