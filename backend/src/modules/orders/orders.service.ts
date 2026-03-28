@@ -259,19 +259,16 @@ export class OrdersService implements OrderContract {
   }
 
   async scanTimeouts(now = new Date()) {
-    const warningCandidates = await this.repository.listTimeoutWarningCandidates(now);
+    const warningTransitions = await this.repository.transitionTimeoutWarnings(now);
 
-    for (const order of warningCandidates) {
-      await this.repository.updateStatuses(order.orderNo, {
-        monitorStatus: 'TIMEOUT_WARNING',
-      });
+    for (const order of warningTransitions) {
       await this.repository.addEvent({
         orderNo: order.orderNo,
         eventType: 'OrderTimeoutWarning',
         sourceService: 'orders',
         sourceNo: null,
         beforeStatusJson: {
-          monitorStatus: order.monitorStatus,
+          monitorStatus: order.previousMonitorStatus,
         },
         afterStatusJson: {
           monitorStatus: 'TIMEOUT_WARNING',
@@ -286,51 +283,73 @@ export class OrdersService implements OrderContract {
       });
     }
 
-    const expiryCandidates = await this.repository.listTimeoutExpiryCandidates(now);
+    const expiryTransitions = await this.repository.transitionTimeoutExpiry(now);
 
-    for (const order of expiryCandidates) {
-      await this.repository.updateStatuses(order.orderNo, {
-        mainStatus: 'REFUNDING',
-        supplierStatus: 'FAIL',
-        refundStatus: 'PENDING',
-        monitorStatus: 'TIMEOUT_WARNING',
-      });
-      await this.repository.addEvent({
-        orderNo: order.orderNo,
-        eventType: 'OrderTimedOut',
-        sourceService: 'orders',
-        sourceNo: null,
-        beforeStatusJson: {
-          mainStatus: order.mainStatus,
-          supplierStatus: order.supplierStatus,
-          refundStatus: order.refundStatus,
-          monitorStatus: order.monitorStatus,
-        },
-        afterStatusJson: {
-          mainStatus: 'REFUNDING',
-          supplierStatus: 'FAIL',
-          refundStatus: 'PENDING',
-          monitorStatus: 'TIMEOUT_WARNING',
-        },
-        payloadJson: {
-          expireDeadlineAt: order.expireDeadlineAt,
-          scannedAt: now.toISOString(),
-        },
-        idempotencyKey: `timeout-expired:${order.orderNo}`,
-        operator: 'SYSTEM',
-        requestId: order.requestId,
-      });
+    for (const order of expiryTransitions) {
+      if (!(order.previousMainStatus === 'REFUNDING' && order.previousRefundStatus === 'PENDING')) {
+        await this.repository.addEvent({
+          orderNo: order.orderNo,
+          eventType: 'OrderTimedOut',
+          sourceService: 'orders',
+          sourceNo: null,
+          beforeStatusJson: {
+            mainStatus: order.previousMainStatus,
+            supplierStatus: order.previousSupplierStatus,
+            refundStatus: order.previousRefundStatus,
+            monitorStatus: order.previousMonitorStatus,
+          },
+          afterStatusJson: {
+            mainStatus: 'REFUNDING',
+            supplierStatus: 'FAIL',
+            refundStatus: 'PENDING',
+            monitorStatus: 'TIMEOUT_WARNING',
+          },
+          payloadJson: {
+            expireDeadlineAt: order.expireDeadlineAt,
+            scannedAt: now.toISOString(),
+          },
+          idempotencyKey: `timeout-expired:${order.orderNo}`,
+          operator: 'SYSTEM',
+          requestId: order.requestId,
+        });
+      }
+
+      const currentOrder = await this.getOrderByNo(order.orderNo);
+
+      if (currentOrder.mainStatus === 'REFUNDED') {
+        await this.handleRefundSucceeded({
+          orderNo: currentOrder.orderNo,
+          sourceService: 'orders',
+          sourceNo: null,
+        });
+        continue;
+      }
+
+      if (currentOrder.mainStatus !== 'REFUNDING' || currentOrder.refundStatus !== 'PENDING') {
+        continue;
+      }
 
       const refund = await this.ledgerContract.refundOrderAmount({
-        channelId: order.channelId,
-        orderNo: order.orderNo,
-        amount: order.salePrice,
+        channelId: currentOrder.channelId,
+        orderNo: currentOrder.orderNo,
+        amount: currentOrder.salePrice,
       });
 
       await this.handleRefundSucceeded({
-        orderNo: order.orderNo,
+        orderNo: currentOrder.orderNo,
         sourceService: 'orders',
         sourceNo: refund.referenceNo,
+      });
+    }
+
+    const notificationRecoveryOrders =
+      await this.repository.listTimeoutNotificationRecoveryCandidates(now);
+
+    for (const order of notificationRecoveryOrders) {
+      await this.handleRefundSucceeded({
+        orderNo: order.orderNo,
+        sourceService: 'orders',
+        sourceNo: null,
       });
     }
   }
@@ -480,6 +499,18 @@ export class OrdersService implements OrderContract {
     const order = await this.getOrderByNo(payload.orderNo);
 
     if (order.mainStatus === 'REFUNDED') {
+      if (order.notifyStatus !== 'SUCCESS') {
+        await eventBus.publish('NotificationRequested', {
+          orderNo: order.orderNo,
+          channelId: order.channelId,
+          notifyType: 'WEBHOOK',
+          triggerReason: 'REFUND_SUCCEEDED',
+        });
+      }
+      return;
+    }
+
+    if (order.mainStatus !== 'REFUNDING' || order.refundStatus !== 'PENDING') {
       return;
     }
 

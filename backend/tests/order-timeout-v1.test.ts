@@ -224,6 +224,42 @@ async function getOrderLedgerActions(orderNo: string) {
   `;
 }
 
+async function setOrderState(
+  orderNo: string,
+  input: {
+    mainStatus?: string;
+    supplierStatus?: string;
+    notifyStatus?: string;
+    refundStatus?: string;
+    monitorStatus?: string;
+    warningDeadlineAt?: Date;
+    expireDeadlineAt?: Date;
+    finishedAt?: Date | null;
+  },
+) {
+  await db`
+    UPDATE ordering.orders
+    SET
+      main_status = COALESCE(${input.mainStatus ?? null}, main_status),
+      supplier_status = COALESCE(${input.supplierStatus ?? null}, supplier_status),
+      notify_status = COALESCE(${input.notifyStatus ?? null}, notify_status),
+      refund_status = COALESCE(${input.refundStatus ?? null}, refund_status),
+      monitor_status = COALESCE(${input.monitorStatus ?? null}, monitor_status),
+      warning_deadline_at = COALESCE(${input.warningDeadlineAt ?? null}, warning_deadline_at),
+      expire_deadline_at = COALESCE(${input.expireDeadlineAt ?? null}, expire_deadline_at),
+      finished_at = CASE
+        WHEN ${input.finishedAt === null} THEN NULL
+        ELSE COALESCE(${input.finishedAt ?? null}, finished_at)
+      END,
+      updated_at = NOW()
+    WHERE order_no = ${orderNo}
+  `;
+}
+
+function countAction(entries: { actionType: string }[], actionType: string) {
+  return entries.filter((entry) => entry.actionType === actionType).length;
+}
+
 function expectDeadlineIso(actual: string | null, expectedIso: string) {
   expect(actual).toBeTruthy();
   expect(new Date(String(actual)).toISOString()).toBe(expectedIso);
@@ -362,5 +398,122 @@ describe.serial('V1 订单超时扫描', () => {
     expect(deliveredTasks).toHaveLength(1);
     expect(deliveredTasks[0]?.notifyType).toBe('WEBHOOK');
     expect(deliveredTasks[0]?.status).toBe('SUCCESS');
+  });
+
+  test('已终态订单在超时扫描时不会被回退或再次退款', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'FAST',
+      faceValue: 100,
+    });
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    await removeSupplierSubmitJob(orderNo);
+    await setOrderState(orderNo, {
+      mainStatus: 'SUCCESS',
+      supplierStatus: 'SUCCESS',
+      refundStatus: 'NONE',
+      notifyStatus: 'SUCCESS',
+      monitorStatus: 'NORMAL',
+      warningDeadlineAt: new Date('2026-03-28T09:10:00.000Z'),
+      expireDeadlineAt: new Date('2026-03-28T10:00:00.000Z'),
+      finishedAt: new Date('2026-03-28T09:05:00.000Z'),
+    });
+
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
+
+    const scannedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+    const ledgerActions = await getOrderLedgerActions(orderNo);
+    const notificationTasks = await listNotificationTasks(orderNo);
+
+    expect(scannedOrder.mainStatus).toBe('SUCCESS');
+    expect(scannedOrder.supplierStatus).toBe('SUCCESS');
+    expect(scannedOrder.refundStatus).toBe('NONE');
+    expect(scannedOrder.monitorStatus).toBe('NORMAL');
+    expect(countAction(ledgerActions, 'ORDER_REFUND')).toBe(0);
+    expect(notificationTasks).toHaveLength(0);
+    expect(scannedOrder.channelId).toBe(order.channelId);
+  });
+
+  test('REFUNDING/PENDING 的超时订单在后续扫描会继续退款路径并避免重复退款', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'FAST',
+      faceValue: 100,
+    });
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    await removeSupplierSubmitJob(orderNo);
+    await setOrderState(orderNo, {
+      mainStatus: 'REFUNDING',
+      supplierStatus: 'FAIL',
+      refundStatus: 'PENDING',
+      notifyStatus: 'PENDING',
+      monitorStatus: 'TIMEOUT_WARNING',
+      warningDeadlineAt: new Date('2026-03-28T09:10:00.000Z'),
+      expireDeadlineAt: new Date('2026-03-28T10:00:00.000Z'),
+    });
+    await runtime.services.ledger.refundOrderAmount({
+      channelId: order.channelId,
+      orderNo,
+      amount: order.salePrice,
+    });
+
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
+
+    const refundedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+    const ledgerActions = await getOrderLedgerActions(orderNo);
+    const pendingTasks = await listNotificationTasks(orderNo);
+
+    expect(refundedOrder.mainStatus).toBe('REFUNDED');
+    expect(refundedOrder.refundStatus).toBe('SUCCESS');
+    expect(countAction(ledgerActions, 'ORDER_REFUND')).toBe(2);
+    expect(pendingTasks).toHaveLength(1);
+    expect(pendingTasks[0]?.triggerReason).toBe('REFUND_SUCCEEDED');
+
+    await processWorkerRound();
+
+    const notifiedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expect(notifiedOrder.notifyStatus).toBe('SUCCESS');
+  });
+
+  test('REFUNDED 但未创建通知的超时订单在后续扫描会补建并继续终态通知', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'FAST',
+      faceValue: 100,
+    });
+
+    await removeSupplierSubmitJob(orderNo);
+    await setOrderState(orderNo, {
+      mainStatus: 'REFUNDED',
+      supplierStatus: 'FAIL',
+      refundStatus: 'SUCCESS',
+      notifyStatus: 'PENDING',
+      monitorStatus: 'TIMEOUT_WARNING',
+      warningDeadlineAt: new Date('2026-03-28T09:10:00.000Z'),
+      expireDeadlineAt: new Date('2026-03-28T10:00:00.000Z'),
+      finishedAt: new Date('2026-03-28T10:00:00.000Z'),
+    });
+
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
+
+    const pendingTasks = await listNotificationTasks(orderNo);
+
+    expect(pendingTasks).toHaveLength(1);
+    expect(pendingTasks[0]).toMatchObject({
+      notifyType: 'WEBHOOK',
+      status: 'PENDING',
+      triggerReason: 'REFUND_SUCCEEDED',
+      mainStatus: 'REFUNDED',
+      refundStatus: 'SUCCESS',
+    });
+
+    await processWorkerRound();
+
+    const notifiedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expect(notifiedOrder.notifyStatus).toBe('SUCCESS');
   });
 });

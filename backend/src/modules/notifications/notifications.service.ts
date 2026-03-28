@@ -53,6 +53,23 @@ export class NotificationsService {
       refundStatus: order.refundStatus,
       triggerReason: input.triggerReason,
     };
+    const existingTask = await this.repository.findLatestTaskByOrderNo(order.orderNo);
+
+    if (existingTask?.status === 'SUCCESS') {
+      return;
+    }
+
+    if (existingTask && ['PENDING', 'SENDING', 'RETRYING'].includes(existingTask.status)) {
+      await this.workerContract.enqueue({
+        jobType: 'notification.deliver',
+        businessKey: existingTask.taskNo,
+        payload: {
+          taskNo: existingTask.taskNo,
+        },
+      });
+      return;
+    }
+
     const destination = String(callbackConfig.callbackUrl ?? 'mock://success');
     const secret = decryptText(String(callbackConfig.secretEncrypted));
     const signature = signOpenApiPayload(secret, JSON.stringify(payload));

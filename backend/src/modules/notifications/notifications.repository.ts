@@ -43,6 +43,30 @@ export class NotificationsRepository {
     return row ? this.mapTask(row) : null;
   }
 
+  async findLatestTaskByOrderNo(orderNo: string): Promise<NotificationTask | null> {
+    const row = await first<NotificationTask>(db<NotificationTask[]>`
+      SELECT
+        id,
+        task_no AS "taskNo",
+        order_no AS "orderNo",
+        channel_id AS "channelId",
+        notify_type AS "notifyType",
+        destination,
+        payload_json AS "payloadJson",
+        signature,
+        status,
+        attempt_count AS "attemptCount",
+        max_attempts AS "maxAttempts",
+        last_error AS "lastError"
+      FROM notification.notification_tasks
+      WHERE order_no = ${orderNo}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `);
+
+    return row ? this.mapTask(row) : null;
+  }
+
   async createTask(input: {
     orderNo: string;
     channelId: string;

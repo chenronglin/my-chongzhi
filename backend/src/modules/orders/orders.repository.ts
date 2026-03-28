@@ -13,6 +13,23 @@ import type {
   SupplierOrderStatus,
 } from '@/modules/orders/orders.types';
 
+interface TimeoutWarningTransition {
+  orderNo: string;
+  requestId: string;
+  warningDeadlineAt: string | null;
+  previousMonitorStatus: OrderMonitorStatus;
+}
+
+interface TimeoutExpiryTransition {
+  orderNo: string;
+  requestId: string;
+  expireDeadlineAt: string | null;
+  previousMainStatus: MainOrderStatus;
+  previousSupplierStatus: SupplierOrderStatus;
+  previousRefundStatus: OrderRefundStatus;
+  previousMonitorStatus: OrderMonitorStatus;
+}
+
 export class OrdersRepository {
   private mapOrder(row: OrderRecord): OrderRecord {
     return {
@@ -456,40 +473,117 @@ export class OrdersRepository {
     await this.updateStatuses(orderNo, { remark });
   }
 
-  async listTimeoutWarningCandidates(now: Date): Promise<OrderRecord[]> {
-    const rows = await db<{ orderNo: string }[]>`
-      SELECT order_no AS "orderNo"
-      FROM ordering.orders
-      WHERE main_status IN ('CREATED', 'PROCESSING')
-        AND monitor_status = 'NORMAL'
-        AND warning_deadline_at IS NOT NULL
-        AND warning_deadline_at <= ${now}
-        AND (expire_deadline_at IS NULL OR expire_deadline_at > ${now})
-      ORDER BY warning_deadline_at ASC, created_at ASC
+  async transitionTimeoutWarnings(now: Date): Promise<TimeoutWarningTransition[]> {
+    const rows = await db<TimeoutWarningTransition[]>`
+      WITH eligible AS (
+        SELECT
+          id,
+          order_no AS "orderNo",
+          request_id AS "requestId",
+          warning_deadline_at::text AS "warningDeadlineAt",
+          monitor_status AS "previousMonitorStatus"
+        FROM ordering.orders
+        WHERE main_status IN ('CREATED', 'PROCESSING')
+          AND monitor_status = 'NORMAL'
+          AND warning_deadline_at IS NOT NULL
+          AND warning_deadline_at <= ${now}
+          AND (expire_deadline_at IS NULL OR expire_deadline_at > ${now})
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE ordering.orders AS current
+      SET
+        monitor_status = 'TIMEOUT_WARNING',
+        version = current.version + 1,
+        updated_at = NOW()
+      FROM eligible
+      WHERE current.id = eligible.id
+      RETURNING
+        eligible."orderNo" AS "orderNo",
+        eligible."requestId" AS "requestId",
+        eligible."warningDeadlineAt" AS "warningDeadlineAt",
+        eligible."previousMonitorStatus" AS "previousMonitorStatus"
     `;
 
-    const orders: OrderRecord[] = [];
-
-    for (const row of rows) {
-      const order = await this.findByOrderNo(row.orderNo);
-
-      if (order) {
-        orders.push(order);
-      }
-    }
-
-    return orders;
+    return rows.map((row) => ({
+      ...row,
+      previousMonitorStatus: this.parseMonitorStatus(row.previousMonitorStatus),
+    }));
   }
 
-  async listTimeoutExpiryCandidates(now: Date): Promise<OrderRecord[]> {
+  async transitionTimeoutExpiry(now: Date): Promise<TimeoutExpiryTransition[]> {
+    const rows = await db<TimeoutExpiryTransition[]>`
+      WITH eligible AS (
+        SELECT
+          id,
+          order_no AS "orderNo",
+          request_id AS "requestId",
+          expire_deadline_at::text AS "expireDeadlineAt",
+          main_status AS "previousMainStatus",
+          supplier_status AS "previousSupplierStatus",
+          refund_status AS "previousRefundStatus",
+          monitor_status AS "previousMonitorStatus"
+        FROM ordering.orders
+        WHERE expire_deadline_at IS NOT NULL
+          AND expire_deadline_at <= ${now}
+          AND (
+            (main_status IN ('CREATED', 'PROCESSING') AND refund_status = 'NONE')
+            OR (main_status = 'REFUNDING' AND refund_status = 'PENDING')
+          )
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE ordering.orders AS current
+      SET
+        main_status = 'REFUNDING',
+        supplier_status = 'FAIL',
+        refund_status = 'PENDING',
+        monitor_status = 'TIMEOUT_WARNING',
+        version = current.version + 1,
+        updated_at = NOW()
+      FROM eligible
+      WHERE current.id = eligible.id
+      RETURNING
+        eligible."orderNo" AS "orderNo",
+        eligible."requestId" AS "requestId",
+        eligible."expireDeadlineAt" AS "expireDeadlineAt",
+        eligible."previousMainStatus" AS "previousMainStatus",
+        eligible."previousSupplierStatus" AS "previousSupplierStatus",
+        eligible."previousRefundStatus" AS "previousRefundStatus",
+        eligible."previousMonitorStatus" AS "previousMonitorStatus"
+    `;
+
+    return rows.map((row) => ({
+      ...row,
+      previousMainStatus:
+        row.previousMainStatus === 'PROCESSING' ||
+        row.previousMainStatus === 'SUCCESS' ||
+        row.previousMainStatus === 'FAIL' ||
+        row.previousMainStatus === 'REFUNDING' ||
+        row.previousMainStatus === 'REFUNDED' ||
+        row.previousMainStatus === 'CLOSED'
+          ? row.previousMainStatus
+          : 'CREATED',
+      previousSupplierStatus:
+        row.previousSupplierStatus === 'ACCEPTED' ||
+        row.previousSupplierStatus === 'QUERYING' ||
+        row.previousSupplierStatus === 'SUCCESS' ||
+        row.previousSupplierStatus === 'FAIL'
+          ? row.previousSupplierStatus
+          : 'WAIT_SUBMIT',
+      previousRefundStatus: this.parseRefundStatus(row.previousRefundStatus),
+      previousMonitorStatus: this.parseMonitorStatus(row.previousMonitorStatus),
+    }));
+  }
+
+  async listTimeoutNotificationRecoveryCandidates(now: Date): Promise<OrderRecord[]> {
     const rows = await db<{ orderNo: string }[]>`
       SELECT order_no AS "orderNo"
       FROM ordering.orders
-      WHERE main_status IN ('CREATED', 'PROCESSING')
-        AND refund_status = 'NONE'
+      WHERE main_status = 'REFUNDED'
+        AND refund_status = 'SUCCESS'
+        AND notify_status <> 'SUCCESS'
         AND expire_deadline_at IS NOT NULL
         AND expire_deadline_at <= ${now}
-      ORDER BY expire_deadline_at ASC, created_at ASC
+      ORDER BY updated_at ASC, created_at ASC
     `;
 
     const orders: OrderRecord[] = [];
