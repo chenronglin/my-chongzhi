@@ -114,6 +114,30 @@ export class LedgerRepository {
     `);
   }
 
+  async findLedgerByOrderAction(orderNo: string, actionType: string): Promise<LedgerEntry | null> {
+    return first<LedgerEntry>(db<LedgerEntry[]>`
+      SELECT
+        id,
+        ledger_no AS "ledgerNo",
+        account_id AS "accountId",
+        order_no AS "orderNo",
+        action_type AS "actionType",
+        direction,
+        amount,
+        currency,
+        balance_before AS "balanceBefore",
+        balance_after AS "balanceAfter",
+        reference_type AS "referenceType",
+        reference_no AS "referenceNo",
+        created_at AS "createdAt"
+      FROM ledger.account_ledgers
+      WHERE order_no = ${orderNo}
+        AND action_type = ${actionType}
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
+  }
+
   async transferBalance(input: {
     fromAccountId: string;
     toAccountId: string;

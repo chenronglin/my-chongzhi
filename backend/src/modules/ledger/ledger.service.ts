@@ -1,3 +1,4 @@
+import { generateBusinessNo } from '@/lib/id';
 import { notFound } from '@/lib/errors';
 import type { LedgerContract } from '@/modules/ledger/contracts';
 import type { LedgerRepository } from '@/modules/ledger/ledger.repository';
@@ -35,16 +36,13 @@ export class LedgerService implements LedgerContract {
     channelId: string;
     orderNo: string;
     amount: number;
-    paymentNo: string;
-  }): Promise<void> {
-    const existing = await this.repository.findLedgerByReference(
-      'ORDER',
-      input.paymentNo,
-      'BALANCE_PAYMENT',
-    );
+  }): Promise<{ referenceNo: string }> {
+    const existing = await this.repository.findLedgerByOrderAction(input.orderNo, 'BALANCE_PAYMENT');
 
     if (existing) {
-      return;
+      return {
+        referenceNo: existing.referenceNo,
+      };
     }
 
     const channelAccount = await this.repository.findAccount('CHANNEL', input.channelId);
@@ -54,14 +52,20 @@ export class LedgerService implements LedgerContract {
       throw notFound('余额账户不存在');
     }
 
+    const referenceNo = generateBusinessNo('balancepay');
+
     await this.repository.transferBalance({
       fromAccountId: channelAccount.id,
       toAccountId: platformAccount.id,
       orderNo: input.orderNo,
       amount: input.amount,
-      referenceNo: input.paymentNo,
+      referenceNo,
       actionType: 'BALANCE_PAYMENT',
     });
+
+    return {
+      referenceNo,
+    };
   }
 
   async handleOnlinePayment(input: {
@@ -127,11 +131,13 @@ export class LedgerService implements LedgerContract {
     }
   }
 
-  async handleRefundSuccess(orderNo: string): Promise<void> {
-    const existing = await this.repository.findLedgerByReference('ORDER', orderNo, 'ORDER_REFUND');
+  async refundOrderPayment(orderNo: string): Promise<{ referenceNo: string }> {
+    const existing = await this.repository.findLedgerByOrderAction(orderNo, 'ORDER_REFUND');
 
     if (existing) {
-      return;
+      return {
+        referenceNo: existing.referenceNo,
+      };
     }
 
     const order = await this.orderContract.getLedgerContext(orderNo);
@@ -157,7 +163,9 @@ export class LedgerService implements LedgerContract {
         actionType: 'ORDER_REFUND',
       });
 
-      return;
+      return {
+        referenceNo: orderNo,
+      };
     }
 
     await this.repository.createSingleLedger({
@@ -169,5 +177,9 @@ export class LedgerService implements LedgerContract {
       referenceType: 'ORDER',
       referenceNo: orderNo,
     });
+
+    return {
+      referenceNo: orderNo,
+    };
   }
 }

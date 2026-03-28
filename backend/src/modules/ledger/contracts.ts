@@ -3,8 +3,7 @@ export interface LedgerContract {
     channelId: string;
     orderNo: string;
     amount: number;
-    paymentNo: string;
-  }): Promise<void>;
+  }): Promise<{ referenceNo: string }>;
   handleOnlinePayment(input: { orderNo: string; amount: number; paymentNo: string }): Promise<void>;
-  handleRefundSuccess(orderNo: string): Promise<void>;
+  refundOrderPayment(orderNo: string): Promise<{ referenceNo: string }>;
 }

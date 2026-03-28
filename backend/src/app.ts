@@ -9,6 +9,8 @@ import { getRequestIdFromRequest } from '@/lib/route-meta';
 import { createChannelsModule } from '@/modules/channels';
 import { createIamModule } from '@/modules/iam';
 import { createLedgerModule } from '@/modules/ledger';
+import type { LedgerContract } from '@/modules/ledger/contracts';
+import type { LedgerService } from '@/modules/ledger/ledger.service';
 import { createNotificationsModule } from '@/modules/notifications';
 import { createOrdersModule } from '@/modules/orders';
 import { createProductsModule } from '@/modules/products';
@@ -23,6 +25,20 @@ interface BuildAppOptions {
   startWorkerScheduler?: boolean;
 }
 
+function createLedgerContractProxy(getService: () => LedgerService): LedgerContract {
+  return {
+    payByBalance(input) {
+      return getService().payByBalance(input);
+    },
+    handleOnlinePayment(input) {
+      return getService().handleOnlinePayment(input);
+    },
+    refundOrderPayment(orderNo) {
+      return getService().refundOrderPayment(orderNo);
+    },
+  };
+}
+
 export async function buildApp(options: BuildAppOptions = {}) {
   eventBus.clear();
 
@@ -31,15 +47,25 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const channelsModule = createChannelsModule(iamModule.service);
   const productsModule = createProductsModule(iamModule.service, channelsModule.service);
   const riskModule = createRiskModule(iamModule.service);
+  let ledgerServiceRef: LedgerService | null = null;
+  const ledgerContract = createLedgerContractProxy(() => {
+    if (!ledgerServiceRef) {
+      throw new Error('账务服务尚未完成初始化');
+    }
+
+    return ledgerServiceRef;
+  });
   const ordersModule = createOrdersModule({
     channelContract: channelsModule.contract,
     productContract: productsModule.contract,
     riskContract: riskModule.contract,
+    ledgerContract,
     workerContract: workerModule.contract,
     channelsService: channelsModule.service,
     iamService: iamModule.service,
   });
   const ledgerModule = createLedgerModule(iamModule.service, ordersModule.contract);
+  ledgerServiceRef = ledgerModule.service;
 
   const suppliersModule = createSuppliersModule({
     iamService: iamModule.service,
@@ -67,25 +93,13 @@ export async function buildApp(options: BuildAppOptions = {}) {
   eventBus.subscribe('SupplierAccepted', (payload) =>
     ordersModule.service.handleSupplierAccepted(payload),
   );
-  eventBus.subscribe('SupplierSucceeded', async (payload) => {
-    await ordersModule.service.handleSupplierSucceeded(payload);
-    await ledgerModule.service.handleSettlementTriggered(payload.orderNo);
-  });
+  eventBus.subscribe('SupplierSucceeded', (payload) => ordersModule.service.handleSupplierSucceeded(payload));
   eventBus.subscribe('SupplierFailed', (payload) =>
     ordersModule.service.handleSupplierFailed(payload),
   );
-  eventBus.subscribe('RefundRequested', async (payload) => {
-    await ordersModule.service.handleRefundSucceeded({
-      orderNo: payload.orderNo,
-      refundNo: payload.refundNo,
-      source: 'supplier',
-    });
-    await ledgerModule.service.handleRefundSuccess(payload.orderNo);
-  });
-  eventBus.subscribe('RefundSucceeded', async (payload) => {
-    await ordersModule.service.handleRefundSucceeded(payload);
-    await ledgerModule.service.handleRefundSuccess(payload.orderNo);
-  });
+  eventBus.subscribe('SettlementTriggered', (payload) =>
+    ledgerModule.service.handleSettlementTriggered(payload.orderNo),
+  );
   eventBus.subscribe('NotificationRequested', (payload) =>
     notificationsModule.service.handleNotificationRequested(payload),
   );
