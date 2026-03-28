@@ -5,7 +5,6 @@ import type { ChannelContract } from '@/modules/channels/contracts';
 import type { OrderContract } from '@/modules/orders/contracts';
 import type { OrdersRepository } from '@/modules/orders/orders.repository';
 import type { OrderRecord } from '@/modules/orders/orders.types';
-import type { PaymentContract } from '@/modules/payments/contracts';
 import type { ProductContract } from '@/modules/products/contracts';
 import type { RiskContract } from '@/modules/risk/contracts';
 import type { WorkerContract } from '@/modules/worker/contracts';
@@ -16,7 +15,6 @@ export class OrdersService implements OrderContract {
     private readonly channelContract: ChannelContract,
     private readonly productContract: ProductContract,
     private readonly riskContract: RiskContract,
-    private readonly paymentContract: PaymentContract,
     private readonly workerContract: WorkerContract,
   ) {}
 
@@ -145,22 +143,21 @@ export class OrdersService implements OrderContract {
       return order;
     }
 
-    const payment = await this.paymentContract.createPaymentForOrder({
-      orderNo: order.orderNo,
-      channelId: order.channelId,
-      amount: salePrice,
-      paymentMode: input.paymentMode,
-    });
-
     if (input.paymentMode === 'ONLINE') {
       await this.repository.updateStatuses(order.orderNo, {
-        paymentNo: payment.paymentNo,
         mainStatus: 'PENDING_PAYMENT',
         paymentStatus: 'UNPAID',
       });
 
       return this.getOrderByNo(order.orderNo);
     }
+
+    await this.handlePaymentSucceeded({
+      orderNo: order.orderNo,
+      paymentNo: generateBusinessNo('pay'),
+      paymentMode: input.paymentMode,
+      paidAmount: salePrice,
+    });
 
     return this.getOrderByNo(order.orderNo);
   }

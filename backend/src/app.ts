@@ -1,3 +1,4 @@
+import { openapi } from '@elysiajs/openapi';
 import { Elysia } from 'elysia';
 
 import { env } from '@/lib/env';
@@ -10,9 +11,6 @@ import { createIamModule } from '@/modules/iam';
 import { createLedgerModule } from '@/modules/ledger';
 import { createNotificationsModule } from '@/modules/notifications';
 import { createOrdersModule } from '@/modules/orders';
-import type { OrderContract } from '@/modules/orders/contracts';
-import type { OrdersService } from '@/modules/orders/orders.service';
-import { createPaymentsModule } from '@/modules/payments';
 import { createProductsModule } from '@/modules/products';
 import { createRiskModule } from '@/modules/risk';
 import { createSuppliersModule } from '@/modules/suppliers';
@@ -25,23 +23,6 @@ interface BuildAppOptions {
   startWorkerScheduler?: boolean;
 }
 
-function createOrderContractProxy(getService: () => OrdersService): OrderContract {
-  return {
-    getOrderByNo(orderNo: string) {
-      return getService().getOrderByNo(orderNo);
-    },
-    getSupplierExecutionContext(orderNo: string) {
-      return getService().getSupplierExecutionContext(orderNo);
-    },
-    getNotificationContext(orderNo: string) {
-      return getService().getNotificationContext(orderNo);
-    },
-    getLedgerContext(orderNo: string) {
-      return getService().getLedgerContext(orderNo);
-    },
-  };
-}
-
 export async function buildApp(options: BuildAppOptions = {}) {
   eventBus.clear();
 
@@ -50,38 +31,24 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const channelsModule = createChannelsModule(iamModule.service);
   const productsModule = createProductsModule(iamModule.service, channelsModule.service);
   const riskModule = createRiskModule(iamModule.service);
-
-  let ordersServiceRef: OrdersService | null = null;
-  const orderContract = createOrderContractProxy(() => {
-    if (!ordersServiceRef) {
-      throw new Error('订单服务尚未完成初始化');
-    }
-
-    return ordersServiceRef;
-  });
-
-  const ledgerModule = createLedgerModule(iamModule.service, orderContract);
-  const paymentsModule = createPaymentsModule(iamModule.service, ledgerModule.service);
   const ordersModule = createOrdersModule({
     channelContract: channelsModule.contract,
     productContract: productsModule.contract,
     riskContract: riskModule.contract,
-    paymentContract: paymentsModule.contract,
     workerContract: workerModule.contract,
     channelsService: channelsModule.service,
     iamService: iamModule.service,
   });
-
-  ordersServiceRef = ordersModule.service;
+  const ledgerModule = createLedgerModule(iamModule.service, ordersModule.contract);
 
   const suppliersModule = createSuppliersModule({
     iamService: iamModule.service,
-    orderContract,
+    orderContract: ordersModule.contract,
     workerContract: workerModule.contract,
   });
   const notificationsModule = createNotificationsModule({
     iamService: iamModule.service,
-    orderContract,
+    orderContract: ordersModule.contract,
     workerContract: workerModule.contract,
   });
 
@@ -97,12 +64,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
   );
 
   // 统一注册领域事件订阅。
-  eventBus.subscribe('PaymentSucceeded', (payload) =>
-    ordersModule.service.handlePaymentSucceeded(payload),
-  );
-  eventBus.subscribe('PaymentFailed', (payload) =>
-    ordersModule.service.handlePaymentFailed(payload),
-  );
   eventBus.subscribe('SupplierAccepted', (payload) =>
     ordersModule.service.handleSupplierAccepted(payload),
   );
@@ -113,9 +74,14 @@ export async function buildApp(options: BuildAppOptions = {}) {
   eventBus.subscribe('SupplierFailed', (payload) =>
     ordersModule.service.handleSupplierFailed(payload),
   );
-  eventBus.subscribe('RefundRequested', (payload) =>
-    paymentsModule.service.handleRefundRequested(payload),
-  );
+  eventBus.subscribe('RefundRequested', async (payload) => {
+    await ordersModule.service.handleRefundSucceeded({
+      orderNo: payload.orderNo,
+      refundNo: payload.refundNo,
+      source: 'supplier',
+    });
+    await ledgerModule.service.handleRefundSuccess(payload.orderNo);
+  });
   eventBus.subscribe('RefundSucceeded', async (payload) => {
     await ordersModule.service.handleRefundSucceeded(payload);
     await ledgerModule.service.handleRefundSuccess(payload.orderNo);
@@ -131,6 +97,24 @@ export async function buildApp(options: BuildAppOptions = {}) {
   );
 
   const app = new Elysia()
+    .use(
+      openapi({
+        documentation: {
+          info: {
+            title: 'ISP 话费充值平台 API',
+            version: '1.0.0',
+            description: 'ISP 话费充值 V1 的后台、开放、内部接口文档',
+          },
+          tags: [
+            { name: 'open-api', description: '渠道开放接口' },
+            { name: 'admin', description: '后台管理接口' },
+            { name: 'internal', description: '内部服务接口' },
+            { name: 'callbacks', description: '供应商回调接口' },
+          ],
+        },
+        path: '/openapi',
+      }),
+    )
     .use(createRequestContextPlugin())
     .use(createErrorPlugin())
     .use(createAuthPlugin())
@@ -149,7 +133,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
     .use(riskModule.routes)
     .use(workerModule.routes)
     .use(ledgerModule.routes)
-    .use(paymentsModule.routes)
     .use(ordersModule.routes)
     .use(suppliersModule.routes)
     .use(notificationsModule.routes);
@@ -167,7 +150,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
       risk: riskModule.service,
       worker: workerModule.service,
       ledger: ledgerModule.service,
-      payments: paymentsModule.service,
       orders: ordersModule.service,
       suppliers: suppliersModule.service,
       notifications: notificationsModule.service,
