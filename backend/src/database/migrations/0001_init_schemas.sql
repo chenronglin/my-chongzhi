@@ -2,7 +2,6 @@ CREATE SCHEMA IF NOT EXISTS iam;
 CREATE SCHEMA IF NOT EXISTS channel;
 CREATE SCHEMA IF NOT EXISTS product;
 CREATE SCHEMA IF NOT EXISTS ordering;
-CREATE SCHEMA IF NOT EXISTS payment;
 CREATE SCHEMA IF NOT EXISTS supplier;
 CREATE SCHEMA IF NOT EXISTS ledger;
 CREATE SCHEMA IF NOT EXISTS risk;
@@ -339,56 +338,6 @@ CREATE TABLE IF NOT EXISTS ordering.order_remarks (
   remark TEXT NOT NULL,
   operator_user_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_channels (
-  id TEXT PRIMARY KEY,
-  channel_code TEXT NOT NULL UNIQUE,
-  channel_name TEXT NOT NULL,
-  provider_type TEXT NOT NULL,
-  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_orders (
-  id TEXT PRIMARY KEY,
-  payment_no TEXT NOT NULL UNIQUE,
-  order_no TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  payment_channel_code TEXT NOT NULL,
-  pay_amount NUMERIC(18, 2) NOT NULL,
-  currency TEXT NOT NULL DEFAULT 'CNY',
-  status TEXT NOT NULL,
-  payment_mode TEXT NOT NULL,
-  third_trade_no TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  paid_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_callback_logs (
-  id TEXT PRIMARY KEY,
-  payment_no TEXT,
-  provider TEXT NOT NULL,
-  headers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  body_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  signature_valid BOOLEAN NOT NULL DEFAULT FALSE,
-  request_id TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_refunds (
-  id TEXT PRIMARY KEY,
-  refund_no TEXT NOT NULL UNIQUE,
-  payment_no TEXT NOT NULL,
-  order_no TEXT NOT NULL,
-  amount NUMERIC(18, 2) NOT NULL,
-  status TEXT NOT NULL,
-  provider_refund_no TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS supplier.suppliers (

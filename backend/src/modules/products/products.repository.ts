@@ -20,7 +20,17 @@ export class ProductsRepository {
   private mapSku(row: ProductSku): ProductSku {
     return {
       ...row,
+      faceValue: Number(row.faceValue),
+      baseCostPrice: Number(row.baseCostPrice),
+      baseSalePrice: Number(row.baseSalePrice),
       extJson: parseJsonValue(row.extJson, {}),
+    };
+  }
+
+  private mapSupplierMapping(row: SkuSupplierMapping): SkuSupplierMapping {
+    return {
+      ...row,
+      costPrice: Number(row.costPrice),
     };
   }
 
@@ -279,7 +289,7 @@ export class ProductsRepository {
   }
 
   async listMappingsBySkuId(skuId: string): Promise<SkuSupplierMapping[]> {
-    return db<SkuSupplierMapping[]>`
+    const rows = await db<SkuSupplierMapping[]>`
       SELECT
         id,
         sku_id AS "skuId",
@@ -295,5 +305,7 @@ export class ProductsRepository {
         AND status = 'ACTIVE'
       ORDER BY priority ASC, weight DESC, created_at ASC
     `;
+
+    return rows.map((row) => this.mapSupplierMapping(row));
   }
 }

@@ -111,7 +111,7 @@ export class OrdersService implements OrderContract {
     channelId: string;
     channelOrderNo: string;
     skuId: string;
-    paymentMode: 'ONLINE' | 'BALANCE' | 'FREE';
+    paymentMode: 'BALANCE' | 'FREE';
     extJson?: Record<string, unknown>;
     requestId: string;
     clientIp: string;
@@ -202,15 +202,6 @@ export class OrdersService implements OrderContract {
       return order;
     }
 
-    if (input.paymentMode === 'ONLINE') {
-      await this.repository.updateStatuses(order.orderNo, {
-        mainStatus: 'PENDING_PAYMENT',
-        paymentStatus: 'UNPAID',
-      });
-
-      return this.getOrderByNo(order.orderNo);
-    }
-
     if (input.paymentMode === 'BALANCE') {
       const funding = await this.ledgerContract.payByBalance({
         channelId: order.channelId,
@@ -292,60 +283,6 @@ export class OrdersService implements OrderContract {
 
   async addRemark(orderNo: string, remark: string, operatorUserId: string | null) {
     await this.repository.addRemark(orderNo, remark, operatorUserId);
-  }
-
-  async handlePaymentSucceeded(payload: {
-    orderNo: string;
-    paymentNo: string;
-    paymentMode: string;
-    paidAmount: number;
-  }) {
-    await this.ledgerContract.handleOnlinePayment({
-      orderNo: payload.orderNo,
-      amount: payload.paidAmount,
-      paymentNo: payload.paymentNo,
-    });
-
-    await this.markOrderPaid({
-      orderNo: payload.orderNo,
-      paymentNo: payload.paymentNo,
-      paymentMode: payload.paymentMode,
-      paidAmount: payload.paidAmount,
-      sourceService: 'ledger',
-      sourceNo: payload.paymentNo,
-      idempotencyKey: payload.paymentNo,
-    });
-  }
-
-  async handlePaymentFailed(payload: { orderNo: string; paymentNo: string; reason: string }) {
-    const order = await this.getOrderByNo(payload.orderNo);
-
-    if (['SUCCESS', 'REFUNDED'].includes(order.mainStatus)) {
-      return;
-    }
-
-    await this.repository.updateStatuses(order.orderNo, {
-      mainStatus: 'CLOSED',
-      paymentStatus: 'PAY_FAIL',
-    });
-    await this.repository.addEvent({
-      orderNo: order.orderNo,
-      eventType: 'PaymentFailed',
-      sourceService: 'orders',
-      sourceNo: payload.paymentNo,
-      beforeStatusJson: {
-        mainStatus: order.mainStatus,
-        paymentStatus: order.paymentStatus,
-      },
-      afterStatusJson: {
-        mainStatus: 'CLOSED',
-        paymentStatus: 'PAY_FAIL',
-      },
-      payloadJson: payload,
-      idempotencyKey: `${payload.paymentNo}:FAIL`,
-      operator: 'SYSTEM',
-      requestId: order.requestId,
-    });
   }
 
   async handleSupplierAccepted(payload: {

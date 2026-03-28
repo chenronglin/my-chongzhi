@@ -78,12 +78,7 @@ export function createSuppliersRoutes({ suppliersService, iamService }: Supplier
       {
         body: SupplierQueryBodySchema,
       },
-    )
-    .post('/refund', async ({ request }) => {
-      const requestId = getRequestIdFromRequest(request);
-      await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-      return ok(requestId, { success: true, note: 'V1 供应商退款先由支付退款兜底' });
-    });
+    );
 
   const callbackRoutes = new Elysia({ prefix: '/callbacks/suppliers' }).post(
     '/:supplierCode',

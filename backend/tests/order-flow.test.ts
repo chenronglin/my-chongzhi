@@ -4,7 +4,7 @@ import { buildApp } from '@/app';
 import { buildOpenApiCanonicalString, signOpenApiPayload } from '@/lib/security';
 import { db } from '@/lib/sql';
 import { stableStringify } from '@/lib/utils';
-import { resetTestState } from './test-support';
+import { forceWorkerJobsReady, resetTestState } from './test-support';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 
@@ -73,6 +73,11 @@ async function getOrderEventSources(orderNo: string, eventType: string) {
   `;
 }
 
+async function processWorkerRound() {
+  await forceWorkerJobsReady();
+  await runtime.services.worker.processReadyJobs();
+}
+
 beforeAll(async () => {
   runtime = await buildApp({
     startWorkerScheduler: false,
@@ -130,12 +135,11 @@ describe('主交易链路', () => {
     expect(paymentEvents[0]?.sourceNo).toBeTruthy();
 
     // 第一次执行会提交供应商并进入受理状态。
-    await runtime.services.worker.processReadyJobs();
-    await Bun.sleep(1100);
+    await processWorkerRound();
     // 第二次执行会执行供应商查询并推进订单成功。
-    await runtime.services.worker.processReadyJobs();
+    await processWorkerRound();
     // 第三次执行处理通知任务。
-    await runtime.services.worker.processReadyJobs();
+    await processWorkerRound();
 
     const finalOrder = await runtime.services.orders.getOrderByNo(orderNo);
 
@@ -174,10 +178,9 @@ describe('主交易链路', () => {
     expect(json.data.orderNo).toBeTruthy();
 
     const orderNo = String(json.data.orderNo);
-    await runtime.services.worker.processReadyJobs();
-    await Bun.sleep(1100);
-    await runtime.services.worker.processReadyJobs();
-    await runtime.services.worker.processReadyJobs();
+    await processWorkerRound();
+    await processWorkerRound();
+    await processWorkerRound();
 
     const finalOrder = await runtime.services.orders.getOrderByNo(orderNo);
     const ledgerEntries = await getOrderLedgerEntries(orderNo);
@@ -192,7 +195,7 @@ describe('主交易链路', () => {
     });
   });
 
-  test('重复支付通知不会重复记账或重复写入支付成功事件', async () => {
+  test('在线支付模式不再属于新基础设施', async () => {
     const skuRows = await db.unsafe<{ id: string }[]>(
       'SELECT id FROM product.product_skus ORDER BY created_at ASC LIMIT 1',
     );
@@ -212,35 +215,15 @@ describe('主交易链路', () => {
         body: JSON.stringify(createBody),
       }),
     );
-    const createJson = await readResponseJson(createResponse);
-    const orderNo = String(createJson.data.orderNo);
-    const token = await runtime.issueInternalToken();
-    const paymentNo = `gateway-${Date.now()}`;
 
-    await Promise.all(
-      [1, 2].map(() =>
-        runtime.app.handle(
-          new Request(`http://localhost/internal/orders/${orderNo}/payment-events`, {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${token}`,
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({
-              status: 'SUCCESS',
-              paymentNo,
-              paymentMode: 'ONLINE',
-              paidAmount: 100,
-            }),
-          }),
-        ),
-      ),
+    expect(createResponse.status).toBe(422);
+
+    const legacyResponse = await runtime.app.handle(
+      new Request('http://localhost/internal/orders/demo-order/payment-events', {
+        method: 'POST',
+      }),
     );
 
-    const ledgerEntries = await getOrderLedgerEntries(orderNo);
-    const paymentEvents = await getOrderEventSources(orderNo, 'PaymentSucceeded');
-
-    expect(ledgerEntries.filter((entry) => entry.actionType === 'ONLINE_PAYMENT')).toHaveLength(1);
-    expect(paymentEvents).toHaveLength(1);
+    expect(legacyResponse.status).toBe(404);
   });
 });

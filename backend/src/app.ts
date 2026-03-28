@@ -3,8 +3,6 @@ import { Elysia } from 'elysia';
 
 import { env } from '@/lib/env';
 import { eventBus } from '@/lib/event-bus';
-import { generateBusinessNo } from '@/lib/id';
-import { signJwt } from '@/lib/jwt-token';
 import { getRequestIdFromRequest } from '@/lib/route-meta';
 import { createChannelsModule } from '@/modules/channels';
 import { createIamModule } from '@/modules/iam';
@@ -29,9 +27,6 @@ function createLedgerContractProxy(getService: () => LedgerService): LedgerContr
   return {
     payByBalance(input) {
       return getService().payByBalance(input);
-    },
-    handleOnlinePayment(input) {
-      return getService().handleOnlinePayment(input);
     },
     refundOrderPayment(orderNo) {
       return getService().refundOrderPayment(orderNo);
@@ -169,19 +164,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
       orders: ordersModule.service,
       suppliers: suppliersModule.service,
       notifications: notificationsModule.service,
-    },
-    async issueInternalToken(serviceName = 'integration-test'): Promise<string> {
-      return signJwt(
-        {
-          sub: serviceName,
-          type: 'internal',
-          roleIds: [],
-          scope: 'internal',
-          jti: generateBusinessNo('internal'),
-        },
-        env.internalJwtSecret,
-        5 * 60,
-      );
     },
     stop() {
       workerModule.service.stopScheduler();

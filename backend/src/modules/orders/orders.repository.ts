@@ -12,6 +12,8 @@ export class OrdersRepository {
   private mapOrder(row: OrderRecord): OrderRecord {
     return {
       ...row,
+      salePrice: Number(row.salePrice),
+      costPrice: Number(row.costPrice),
       channelSnapshotJson: parseJsonValue(row.channelSnapshotJson, {}),
       productSnapshotJson: parseJsonValue(row.productSnapshotJson, {}),
       callbackSnapshotJson: parseJsonValue(row.callbackSnapshotJson, {}),

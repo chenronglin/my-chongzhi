@@ -20,3 +20,13 @@ export async function resetTestState() {
 
   await runSeed(db);
 }
+
+export async function forceWorkerJobsReady() {
+  await db`
+    UPDATE worker.worker_jobs
+    SET
+      next_run_at = NOW(),
+      updated_at = NOW()
+    WHERE status IN ('READY', 'RETRY_WAIT')
+  `;
+}

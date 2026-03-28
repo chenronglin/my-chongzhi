@@ -10,6 +10,22 @@ import type {
 } from '@/modules/channels/channels.types';
 
 export class ChannelsRepository {
+  private mapPricePolicy(row: ChannelPricePolicy): ChannelPricePolicy {
+    return {
+      ...row,
+      salePrice: Number(row.salePrice),
+    };
+  }
+
+  private mapLimitRule(row: ChannelLimitRule): ChannelLimitRule {
+    return {
+      ...row,
+      singleLimit: Number(row.singleLimit),
+      dailyLimit: Number(row.dailyLimit),
+      monthlyLimit: Number(row.monthlyLimit),
+    };
+  }
+
   async listChannels(): Promise<Channel[]> {
     return db.unsafe<Channel[]>(channelsSql.listChannels);
   }
@@ -224,7 +240,7 @@ export class ChannelsRepository {
   }
 
   async findPricePolicy(channelId: string, skuId: string): Promise<ChannelPricePolicy | null> {
-    return first<ChannelPricePolicy>(db<ChannelPricePolicy[]>`
+    const row = await first<ChannelPricePolicy>(db<ChannelPricePolicy[]>`
       SELECT
         id,
         channel_id AS "channelId",
@@ -241,6 +257,8 @@ export class ChannelsRepository {
       ORDER BY created_at DESC
       LIMIT 1
     `);
+
+    return row ? this.mapPricePolicy(row) : null;
   }
 
   async upsertLimitRule(input: {
@@ -282,7 +300,7 @@ export class ChannelsRepository {
   }
 
   async findLimitRule(channelId: string): Promise<ChannelLimitRule | null> {
-    return first<ChannelLimitRule>(db<ChannelLimitRule[]>`
+    const row = await first<ChannelLimitRule>(db<ChannelLimitRule[]>`
       SELECT
         id,
         channel_id AS "channelId",
@@ -294,6 +312,8 @@ export class ChannelsRepository {
       WHERE channel_id = ${channelId}
       LIMIT 1
     `);
+
+    return row ? this.mapLimitRule(row) : null;
   }
 
   async upsertCallbackConfig(input: {

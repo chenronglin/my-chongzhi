@@ -27,7 +27,6 @@ export async function runSeed(db: SQL): Promise<void> {
   const pricePolicyId = generateId();
   const limitRuleId = generateId();
   const authId = generateId();
-  const paymentChannelId = generateId();
   const riskRuleId = generateId();
   const profitRuleId = generateId();
   const platformAccountId = generateId();
@@ -398,32 +397,6 @@ export async function runSeed(db: SQL): Promise<void> {
       FROM supplier.suppliers
       WHERE supplier_code = ${env.seed.supplierCode}
       ON CONFLICT DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO payment.payment_channels (
-        id,
-        channel_code,
-        channel_name,
-        provider_type,
-        config_json,
-        status
-      )
-      VALUES (
-        ${paymentChannelId},
-        ${env.seed.paymentChannel},
-        '模拟支付通道',
-        'MOCK',
-        ${JSON.stringify({ mode: 'mock' })},
-        'ACTIVE'
-      )
-      ON CONFLICT (channel_code) DO UPDATE
-      SET
-        channel_name = EXCLUDED.channel_name,
-        provider_type = EXCLUDED.provider_type,
-        config_json = EXCLUDED.config_json,
-        status = EXCLUDED.status,
-        updated_at = NOW()
     `;
 
     await tx`

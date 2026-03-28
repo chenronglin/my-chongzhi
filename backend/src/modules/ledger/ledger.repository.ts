@@ -8,12 +8,31 @@ export class LedgerRepository {
     await tx`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
   }
 
+  private mapAccount(row: Account): Account {
+    return {
+      ...row,
+      availableBalance: Number(row.availableBalance),
+      frozenBalance: Number(row.frozenBalance),
+    };
+  }
+
+  private mapLedgerEntry(row: LedgerEntry): LedgerEntry {
+    return {
+      ...row,
+      amount: Number(row.amount),
+      balanceBefore: Number(row.balanceBefore),
+      balanceAfter: Number(row.balanceAfter),
+    };
+  }
+
   async listAccounts(): Promise<Account[]> {
-    return db.unsafe<Account[]>(ledgerSql.listAccounts);
+    const rows = await db.unsafe<Account[]>(ledgerSql.listAccounts);
+    return rows.map((row) => this.mapAccount(row));
   }
 
   async listLedgerEntries(): Promise<LedgerEntry[]> {
-    return db.unsafe<LedgerEntry[]>(ledgerSql.listEntries);
+    const rows = await db.unsafe<LedgerEntry[]>(ledgerSql.listEntries);
+    return rows.map((row) => this.mapLedgerEntry(row));
   }
 
   async listProfitRules(): Promise<ProfitRule[]> {
@@ -70,7 +89,7 @@ export class LedgerRepository {
   }
 
   async findAccount(ownerType: string, ownerId: string): Promise<Account | null> {
-    return first<Account>(db<Account[]>`
+    const row = await first<Account>(db<Account[]>`
       SELECT
         id,
         owner_type AS "ownerType",
@@ -84,6 +103,8 @@ export class LedgerRepository {
         AND owner_id = ${ownerId}
       LIMIT 1
     `);
+
+    return row ? this.mapAccount(row) : null;
   }
 
   async findPlatformAccount(): Promise<Account | null> {
@@ -95,7 +116,7 @@ export class LedgerRepository {
     referenceNo: string,
     actionType: string,
   ): Promise<LedgerEntry | null> {
-    return first<LedgerEntry>(db<LedgerEntry[]>`
+    const row = await first<LedgerEntry>(db<LedgerEntry[]>`
       SELECT
         id,
         ledger_no AS "ledgerNo",
@@ -116,10 +137,12 @@ export class LedgerRepository {
         AND action_type = ${actionType}
       LIMIT 1
     `);
+
+    return row ? this.mapLedgerEntry(row) : null;
   }
 
   async findLedgerByOrderAction(orderNo: string, actionType: string): Promise<LedgerEntry | null> {
-    return first<LedgerEntry>(db<LedgerEntry[]>`
+    const row = await first<LedgerEntry>(db<LedgerEntry[]>`
       SELECT
         id,
         ledger_no AS "ledgerNo",
@@ -140,6 +163,8 @@ export class LedgerRepository {
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
+
+    return row ? this.mapLedgerEntry(row) : null;
   }
 
   async transferBalance(input: {

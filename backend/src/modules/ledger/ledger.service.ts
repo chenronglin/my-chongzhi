@@ -71,38 +71,6 @@ export class LedgerService implements LedgerContract {
     };
   }
 
-  async handleOnlinePayment(input: {
-    orderNo: string;
-    amount: number;
-    paymentNo: string;
-  }): Promise<void> {
-    const existing = await this.repository.findLedgerByReference(
-      'PAYMENT',
-      input.paymentNo,
-      'ONLINE_PAYMENT',
-    );
-
-    if (existing) {
-      return;
-    }
-
-    const platformAccount = await this.repository.findPlatformAccount();
-
-    if (!platformAccount) {
-      throw notFound('平台账户不存在');
-    }
-
-    await this.repository.createSingleLedger({
-      accountId: platformAccount.id,
-      orderNo: input.orderNo,
-      actionType: 'ONLINE_PAYMENT',
-      direction: 'CREDIT',
-      amount: input.amount,
-      referenceType: 'PAYMENT',
-      referenceNo: input.paymentNo,
-    });
-  }
-
   async handleSettlementTriggered(orderNo: string): Promise<void> {
     const existing = await this.repository.findLedgerByReference(
       'ORDER',

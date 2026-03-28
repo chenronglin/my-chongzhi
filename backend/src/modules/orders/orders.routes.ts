@@ -149,28 +149,6 @@ export function createOrdersRoutes({
     });
 
   const internalRoutes = new Elysia({ prefix: '/internal/orders' })
-    .post('/:orderNo/payment-events', async ({ params, body, request }) => {
-      const requestId = getRequestIdFromRequest(request);
-      await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-      const payloadBody = body as Record<string, any>;
-
-      if (payloadBody.status === 'SUCCESS') {
-        await ordersService.handlePaymentSucceeded({
-          orderNo: params.orderNo,
-          paymentNo: String(payloadBody.paymentNo),
-          paymentMode: String(payloadBody.paymentMode),
-          paidAmount: Number(payloadBody.paidAmount),
-        });
-      } else {
-        await ordersService.handlePaymentFailed({
-          orderNo: params.orderNo,
-          paymentNo: String(payloadBody.paymentNo),
-          reason: String(payloadBody.reason ?? '支付失败'),
-        });
-      }
-
-      return ok(requestId, { success: true });
-    })
     .post('/:orderNo/supplier-events', async ({ params, body, request }) => {
       const requestId = getRequestIdFromRequest(request);
       await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
