@@ -151,12 +151,7 @@ export function createOrdersRoutes({
       const requestId = getRequestIdFromRequest(request);
       const payload = await verifyAdminAuthorizationHeader(request.headers.get('authorization'));
       await iamService.requireActiveAdmin(payload.sub);
-      const order = await ordersService.getOrderByNo(params.orderNo);
-      await ordersService.handleNotificationFailed({
-        orderNo: order.orderNo,
-        taskNo: 'manual-retry',
-        reason: '管理员手工重试通知',
-      });
+      await ordersService.retryNotification(params.orderNo);
       return ok(requestId, { success: true });
     });
 

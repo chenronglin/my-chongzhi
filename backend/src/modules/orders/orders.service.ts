@@ -2,6 +2,7 @@ import { badRequest, forbidden, notFound } from '@/lib/errors';
 import { eventBus } from '@/lib/event-bus';
 import type { ChannelContract } from '@/modules/channels/contracts';
 import type { LedgerContract } from '@/modules/ledger/contracts';
+import { NotificationsRepository } from '@/modules/notifications/notifications.repository';
 import type { OrderContract } from '@/modules/orders/contracts';
 import type { OrdersRepository } from '@/modules/orders/orders.repository';
 import type { OrderRecord } from '@/modules/orders/orders.types';
@@ -10,7 +11,21 @@ import type { RechargeProductType } from '@/modules/products/products.types';
 import type { RiskContract } from '@/modules/risk/contracts';
 import type { WorkerContract } from '@/modules/worker/contracts';
 
+function isUniqueConstraintViolation(error: unknown): error is { code: string } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === '23505'
+  );
+}
+
 export class OrdersService implements OrderContract {
+  private readonly notificationsRepository: Pick<
+    NotificationsRepository,
+    'findLatestTaskByOrderNo'
+  >;
+
   constructor(
     private readonly repository: OrdersRepository,
     private readonly channelContract: ChannelContract,
@@ -18,7 +33,13 @@ export class OrdersService implements OrderContract {
     private readonly riskContract: RiskContract,
     private readonly ledgerContract: LedgerContract,
     private readonly workerContract: WorkerContract,
-  ) {}
+    notificationsRepository: Pick<
+      NotificationsRepository,
+      'findLatestTaskByOrderNo'
+    > = new NotificationsRepository(),
+  ) {
+    this.notificationsRepository = notificationsRepository;
+  }
 
   async listOrders() {
     return this.repository.listOrders();
@@ -121,44 +142,61 @@ export class OrdersService implements OrderContract {
     const warningDeadlineAt = new Date(now + (isFast ? 10 : 150) * 60 * 1000);
     const expireDeadlineAt = new Date(now + (isFast ? 60 : 180) * 60 * 1000);
 
-    const order = await this.repository.createOrder({
-      channelOrderNo: input.channelOrderNo,
-      channelId: input.channelId,
-      parentChannelId: null,
-      mobile: matched.mobileContext.mobile,
-      province: matched.mobileContext.province,
-      ispName: matched.mobileContext.ispName,
-      faceValue: input.faceValue,
-      requestedProductType: input.productType ?? 'MIXED',
-      matchedProductId: matched.product.id,
-      salePrice,
-      purchasePrice: Number(matched.supplierCandidates[0]?.costPrice ?? 0),
-      mainStatus: 'CREATED',
-      supplierStatus: 'WAIT_SUBMIT',
-      notifyStatus: 'PENDING',
-      refundStatus: 'NONE',
-      monitorStatus: 'NORMAL',
-      warningDeadlineAt,
-      expireDeadlineAt,
-      channelSnapshotJson: {
-        channel: policy.channel,
-        pricePolicy: policy.pricePolicy,
-      },
-      productSnapshotJson: {
-        product: matched.product,
-      },
-      callbackSnapshotJson: {
-        callbackConfig: policy.callbackConfig,
-      },
-      supplierRouteSnapshotJson: {
-        supplierCandidates: matched.supplierCandidates,
-      },
-      riskSnapshotJson: {
-        ...riskDecision,
-      },
-      extJson: input.extJson ?? {},
-      requestId: input.requestId,
-    });
+    let order: OrderRecord;
+
+    try {
+      order = await this.repository.createOrder({
+        channelOrderNo: input.channelOrderNo,
+        channelId: input.channelId,
+        parentChannelId: null,
+        mobile: matched.mobileContext.mobile,
+        province: matched.mobileContext.province,
+        ispName: matched.mobileContext.ispName,
+        faceValue: input.faceValue,
+        requestedProductType: input.productType ?? 'MIXED',
+        matchedProductId: matched.product.id,
+        salePrice,
+        purchasePrice: Number(matched.supplierCandidates[0]?.costPrice ?? 0),
+        mainStatus: 'CREATED',
+        supplierStatus: 'WAIT_SUBMIT',
+        notifyStatus: 'PENDING',
+        refundStatus: 'NONE',
+        monitorStatus: 'NORMAL',
+        warningDeadlineAt,
+        expireDeadlineAt,
+        channelSnapshotJson: {
+          channel: policy.channel,
+          pricePolicy: policy.pricePolicy,
+        },
+        productSnapshotJson: {
+          product: matched.product,
+        },
+        callbackSnapshotJson: {
+          callbackConfig: policy.callbackConfig,
+        },
+        supplierRouteSnapshotJson: {
+          supplierCandidates: matched.supplierCandidates,
+        },
+        riskSnapshotJson: {
+          ...riskDecision,
+        },
+        extJson: input.extJson ?? {},
+        requestId: input.requestId,
+      });
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) {
+        const conflictedOrder = await this.repository.findByChannelOrder(
+          input.channelId,
+          input.channelOrderNo,
+        );
+
+        if (conflictedOrder) {
+          return conflictedOrder;
+        }
+      }
+
+      throw error;
+    }
 
     await this.repository.addEvent({
       orderNo: order.orderNo,
@@ -204,6 +242,25 @@ export class OrdersService implements OrderContract {
     });
 
     return this.getOrderByNo(order.orderNo);
+  }
+
+  async retryNotification(orderNo: string) {
+    await this.getOrderByNo(orderNo);
+
+    const latestTask = await this.notificationsRepository.findLatestTaskByOrderNo(orderNo);
+
+    if (!latestTask) {
+      throw badRequest('订单暂无可重试的通知任务');
+    }
+
+    await this.workerContract.schedule({
+      jobType: 'notification.deliver',
+      businessKey: latestTask.taskNo,
+      payload: {
+        taskNo: latestTask.taskNo,
+      },
+      nextRunAt: new Date(),
+    });
   }
 
   async closeOrder(orderNo: string, requestId: string) {
