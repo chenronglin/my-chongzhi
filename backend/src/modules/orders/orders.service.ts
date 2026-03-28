@@ -258,6 +258,83 @@ export class OrdersService implements OrderContract {
     await this.repository.addRemark(orderNo, remark, operatorUserId);
   }
 
+  async scanTimeouts(now = new Date()) {
+    const warningCandidates = await this.repository.listTimeoutWarningCandidates(now);
+
+    for (const order of warningCandidates) {
+      await this.repository.updateStatuses(order.orderNo, {
+        monitorStatus: 'TIMEOUT_WARNING',
+      });
+      await this.repository.addEvent({
+        orderNo: order.orderNo,
+        eventType: 'OrderTimeoutWarning',
+        sourceService: 'orders',
+        sourceNo: null,
+        beforeStatusJson: {
+          monitorStatus: order.monitorStatus,
+        },
+        afterStatusJson: {
+          monitorStatus: 'TIMEOUT_WARNING',
+        },
+        payloadJson: {
+          warningDeadlineAt: order.warningDeadlineAt,
+          scannedAt: now.toISOString(),
+        },
+        idempotencyKey: `timeout-warning:${order.orderNo}`,
+        operator: 'SYSTEM',
+        requestId: order.requestId,
+      });
+    }
+
+    const expiryCandidates = await this.repository.listTimeoutExpiryCandidates(now);
+
+    for (const order of expiryCandidates) {
+      await this.repository.updateStatuses(order.orderNo, {
+        mainStatus: 'REFUNDING',
+        supplierStatus: 'FAIL',
+        refundStatus: 'PENDING',
+        monitorStatus: 'TIMEOUT_WARNING',
+      });
+      await this.repository.addEvent({
+        orderNo: order.orderNo,
+        eventType: 'OrderTimedOut',
+        sourceService: 'orders',
+        sourceNo: null,
+        beforeStatusJson: {
+          mainStatus: order.mainStatus,
+          supplierStatus: order.supplierStatus,
+          refundStatus: order.refundStatus,
+          monitorStatus: order.monitorStatus,
+        },
+        afterStatusJson: {
+          mainStatus: 'REFUNDING',
+          supplierStatus: 'FAIL',
+          refundStatus: 'PENDING',
+          monitorStatus: 'TIMEOUT_WARNING',
+        },
+        payloadJson: {
+          expireDeadlineAt: order.expireDeadlineAt,
+          scannedAt: now.toISOString(),
+        },
+        idempotencyKey: `timeout-expired:${order.orderNo}`,
+        operator: 'SYSTEM',
+        requestId: order.requestId,
+      });
+
+      const refund = await this.ledgerContract.refundOrderAmount({
+        channelId: order.channelId,
+        orderNo: order.orderNo,
+        amount: order.salePrice,
+      });
+
+      await this.handleRefundSucceeded({
+        orderNo: order.orderNo,
+        sourceService: 'orders',
+        sourceNo: refund.referenceNo,
+      });
+    }
+  }
+
   async handleSupplierAccepted(payload: {
     orderNo: string;
     supplierId: string;

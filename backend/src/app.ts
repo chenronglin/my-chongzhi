@@ -112,8 +112,11 @@ export async function buildApp(options: BuildAppOptions = {}) {
       reconcileDate: typeof payload.reconcileDate === 'string' ? payload.reconcileDate : undefined,
     });
   });
-  workerModule.service.registerHandler('order.timeout.scan', async () => {
-    throw new Error('order.timeout.scan 尚未在 V1 中实现');
+  workerModule.service.registerHandler('order.timeout.scan', async (payload) => {
+    const requestedNow = typeof payload.now === 'string' ? new Date(payload.now) : new Date();
+    const scanNow = Number.isNaN(requestedNow.getTime()) ? new Date() : requestedNow;
+
+    await ordersModule.service.scanTimeouts(scanNow);
   });
   workerModule.service.registerHandler('notification.deliver', (payload) =>
     notificationsModule.service.handleDeliverJob(payload),

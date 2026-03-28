@@ -455,4 +455,53 @@ export class OrdersRepository {
   async addRemark(orderNo: string, remark: string, _operatorUserId: string | null): Promise<void> {
     await this.updateStatuses(orderNo, { remark });
   }
+
+  async listTimeoutWarningCandidates(now: Date): Promise<OrderRecord[]> {
+    const rows = await db<{ orderNo: string }[]>`
+      SELECT order_no AS "orderNo"
+      FROM ordering.orders
+      WHERE main_status IN ('CREATED', 'PROCESSING')
+        AND monitor_status = 'NORMAL'
+        AND warning_deadline_at IS NOT NULL
+        AND warning_deadline_at <= ${now}
+        AND (expire_deadline_at IS NULL OR expire_deadline_at > ${now})
+      ORDER BY warning_deadline_at ASC, created_at ASC
+    `;
+
+    const orders: OrderRecord[] = [];
+
+    for (const row of rows) {
+      const order = await this.findByOrderNo(row.orderNo);
+
+      if (order) {
+        orders.push(order);
+      }
+    }
+
+    return orders;
+  }
+
+  async listTimeoutExpiryCandidates(now: Date): Promise<OrderRecord[]> {
+    const rows = await db<{ orderNo: string }[]>`
+      SELECT order_no AS "orderNo"
+      FROM ordering.orders
+      WHERE main_status IN ('CREATED', 'PROCESSING')
+        AND refund_status = 'NONE'
+        AND expire_deadline_at IS NOT NULL
+        AND expire_deadline_at <= ${now}
+      ORDER BY expire_deadline_at ASC, created_at ASC
+    `;
+
+    const orders: OrderRecord[] = [];
+
+    for (const row of rows) {
+      const order = await this.findByOrderNo(row.orderNo);
+
+      if (order) {
+        orders.push(order);
+      }
+    }
+
+    return orders;
+  }
 }

@@ -2,7 +2,10 @@ import { generateBusinessNo, generateId } from '@/lib/id';
 import { db, first } from '@/lib/sql';
 import { parseJsonValue } from '@/lib/utils';
 import { notificationsSql } from '@/modules/notifications/notifications.sql';
-import type { NotificationTask } from '@/modules/notifications/notifications.types';
+import type {
+  NotificationTask,
+  NotificationTaskType,
+} from '@/modules/notifications/notifications.types';
 
 export class NotificationsRepository {
   private mapTask(row: NotificationTask): NotificationTask {
@@ -43,7 +46,7 @@ export class NotificationsRepository {
   async createTask(input: {
     orderNo: string;
     channelId: string;
-    notifyType: string;
+    notifyType: NotificationTaskType;
     destination: string;
     payloadJson: Record<string, unknown>;
     signature: string | null;

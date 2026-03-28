@@ -1,6 +1,11 @@
+import { badRequest } from '@/lib/errors';
 import { eventBus } from '@/lib/event-bus';
 import { decryptText, signOpenApiPayload } from '@/lib/security';
 import type { NotificationsRepository } from '@/modules/notifications/notifications.repository';
+import type {
+  NotificationTaskType,
+  NotificationTriggerReason,
+} from '@/modules/notifications/notifications.types';
 import type { OrderContract } from '@/modules/orders/contracts';
 import type { WorkerContract } from '@/modules/worker/contracts';
 
@@ -29,6 +34,17 @@ export class NotificationsService {
     notifyType: 'WEBHOOK' | 'SMS' | 'EMAIL';
     triggerReason: string;
   }) {
+    if (input.notifyType !== 'WEBHOOK') {
+      throw badRequest('V1 仅支持终态 WEBHOOK 通知');
+    }
+
+    if (!['ORDER_SUCCESS', 'REFUND_SUCCEEDED', 'INTERNAL_MANUAL'].includes(input.triggerReason)) {
+      throw badRequest('V1 仅支持终态通知触发原因');
+    }
+
+    const notifyType: NotificationTaskType = input.notifyType;
+    const triggerReason = input.triggerReason as NotificationTriggerReason;
+
     const order = await this.orderContract.getNotificationContext(input.orderNo);
     const callbackConfig = order.callbackSnapshotJson.callbackConfig as Record<string, unknown>;
     const payload = {
@@ -37,7 +53,7 @@ export class NotificationsService {
       supplierStatus: order.supplierStatus,
       notifyStatus: order.notifyStatus,
       refundStatus: order.refundStatus,
-      triggerReason: input.triggerReason,
+      triggerReason,
     };
     const destination = String(callbackConfig.callbackUrl ?? 'mock://success');
     const secret = decryptText(String(callbackConfig.secretEncrypted));
@@ -45,7 +61,7 @@ export class NotificationsService {
     const task = await this.repository.createTask({
       orderNo: order.orderNo,
       channelId: order.channelId,
-      notifyType: input.notifyType,
+      notifyType,
       destination,
       payloadJson: payload,
       signature,

@@ -42,39 +42,25 @@ export function createNotificationsRoutes({
       return ok(requestId, await notificationsService.listDeadLetters());
     });
 
-  const internalRoutes = new Elysia({ prefix: '/internal/notifications' })
-    .post(
-      '/webhook',
-      async ({ body, request }) => {
-        const requestId = getRequestIdFromRequest(request);
-        await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-        await notificationsService.handleNotificationRequested({
-          orderNo: body.orderNo,
-          channelId: body.channelId,
-          notifyType: 'WEBHOOK',
-          triggerReason: 'INTERNAL_MANUAL',
-        });
-        return ok(requestId, { success: true });
-      },
-      {
-        body: CreateNotificationBodySchema,
-      },
-    )
-    .post('/sms', async ({ request }) => {
+  const internalRoutes = new Elysia({ prefix: '/internal/notifications' });
+
+  internalRoutes.post(
+    '/webhook',
+    async ({ body, request }) => {
       const requestId = getRequestIdFromRequest(request);
       await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-      return ok(requestId, { success: true, note: 'V1 短信通道使用接口桩' });
-    })
-    .post('/email', async ({ request }) => {
-      const requestId = getRequestIdFromRequest(request);
-      await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-      return ok(requestId, { success: true, note: 'V1 邮件通道使用接口桩' });
-    })
-    .post('/retry', async ({ request }) => {
-      const requestId = getRequestIdFromRequest(request);
-      await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
+      await notificationsService.handleNotificationRequested({
+        orderNo: body.orderNo,
+        channelId: body.channelId,
+        notifyType: 'WEBHOOK',
+        triggerReason: 'INTERNAL_MANUAL',
+      });
       return ok(requestId, { success: true });
-    });
+    },
+    {
+      body: CreateNotificationBodySchema,
+    },
+  );
 
   return new Elysia().use(adminRoutes).use(internalRoutes);
 }
