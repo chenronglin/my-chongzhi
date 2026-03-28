@@ -73,6 +73,51 @@ async function getOrderEventSources(orderNo: string, eventType: string) {
   `;
 }
 
+async function getDemoChannelId() {
+  const rows = await db<{ id: string }[]>`
+    SELECT c.id
+    FROM channel.channels c
+    INNER JOIN channel.channel_api_credentials cred
+      ON cred.channel_id = c.id
+    WHERE cred.access_key = 'demo-access-key'
+    LIMIT 1
+  `;
+
+  return rows[0]?.id ?? null;
+}
+
+async function setChannelBalance(channelId: string, amount: number) {
+  await db`
+    UPDATE ledger.accounts
+    SET
+      available_balance = ${amount},
+      updated_at = NOW()
+    WHERE owner_type = 'CHANNEL'
+      AND owner_id = ${channelId}
+  `;
+}
+
+async function findOrderByChannelOrder(channelId: string, channelOrderNo: string) {
+  const rows = await db<
+    {
+      orderNo: string;
+      mainStatus: string;
+      paymentStatus: string;
+    }[]
+  >`
+    SELECT
+      order_no AS "orderNo",
+      main_status AS "mainStatus",
+      payment_status AS "paymentStatus"
+    FROM ordering.orders
+    WHERE channel_id = ${channelId}
+      AND channel_order_no = ${channelOrderNo}
+    LIMIT 1
+  `;
+
+  return rows[0] ?? null;
+}
+
 async function processWorkerRound() {
   await forceWorkerJobsReady();
   await runtime.services.worker.processReadyJobs();
@@ -192,6 +237,57 @@ describe.serial('主交易链路', () => {
     expect(refundEvents).toHaveLength(1);
     expect(refundEvents[0]).toMatchObject({
       sourceService: 'ledger',
+    });
+  });
+
+  test('余额不足导致首次资金扣减失败时不会留下脏订单，补足余额后可用同渠道单号重试成功', async () => {
+    const skuRows = await db.unsafe<{ id: string }[]>(
+      'SELECT id FROM product.product_skus ORDER BY created_at ASC LIMIT 1',
+    );
+    const skuId = skuRows[0]?.id;
+    const channelId = await getDemoChannelId();
+
+    expect(skuId).toBeTruthy();
+    expect(channelId).toBeTruthy();
+
+    const channelOrderNo = `insufficient-${Date.now()}`;
+    const body = {
+      channelOrderNo,
+      skuId,
+      paymentMode: 'BALANCE',
+    };
+
+    await setChannelBalance(String(channelId), 0);
+
+    const firstResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders('/open-api/orders', body),
+        body: JSON.stringify(body),
+      }),
+    );
+
+    expect(firstResponse.status).toBe(500);
+    expect(await findOrderByChannelOrder(String(channelId), channelOrderNo)).toBeNull();
+
+    await setChannelBalance(String(channelId), 10000);
+
+    const retryResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders('/open-api/orders', body),
+        body: JSON.stringify(body),
+      }),
+    );
+    const retryJson = await readResponseJson(retryResponse);
+
+    expect(retryResponse.status).toBe(200);
+    expect(retryJson.code).toBe(0);
+    expect(retryJson.data.orderNo).toBeTruthy();
+    expect(await findOrderByChannelOrder(String(channelId), channelOrderNo)).toMatchObject({
+      orderNo: String(retryJson.data.orderNo),
+      mainStatus: 'WAIT_SUPPLIER_SUBMIT',
+      paymentStatus: 'PAID',
     });
   });
 

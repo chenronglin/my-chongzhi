@@ -202,11 +202,18 @@ export class OrdersService implements OrderContract {
       return order;
     }
 
-    const funding = await this.ledgerContract.payByBalance({
-      channelId: order.channelId,
-      orderNo: order.orderNo,
-      amount: salePrice,
-    });
+    let funding: Awaited<ReturnType<LedgerContract['payByBalance']>>;
+
+    try {
+      funding = await this.ledgerContract.payByBalance({
+        channelId: order.channelId,
+        orderNo: order.orderNo,
+        amount: salePrice,
+      });
+    } catch (error) {
+      await this.repository.deleteOrder(order.orderNo);
+      throw error;
+    }
 
     await this.markOrderPaid({
       orderNo: order.orderNo,

@@ -349,6 +349,23 @@ export class OrdersRepository {
     return rows.map((row) => this.mapEvent(row));
   }
 
+  async deleteOrder(orderNo: string): Promise<void> {
+    await db.begin(async (tx) => {
+      await tx`
+        DELETE FROM ordering.order_remarks
+        WHERE order_no = ${orderNo}
+      `;
+      await tx`
+        DELETE FROM ordering.order_events
+        WHERE order_no = ${orderNo}
+      `;
+      await tx`
+        DELETE FROM ordering.orders
+        WHERE order_no = ${orderNo}
+      `;
+    });
+  }
+
   async addRemark(orderNo: string, remark: string, operatorUserId: string | null): Promise<void> {
     await db`
       INSERT INTO ordering.order_remarks (id, order_no, remark, operator_user_id, created_at)
