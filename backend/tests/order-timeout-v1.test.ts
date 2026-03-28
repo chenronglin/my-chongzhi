@@ -506,6 +506,47 @@ describe.serial('V1 订单超时扫描', () => {
     expect(notifiedOrder.notifyStatus).toBe('SUCCESS');
   });
 
+  test('REFUNDING/PENDING 期间的供应商迟到成功不会把订单重新推进为 SUCCESS', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'FAST',
+      faceValue: 100,
+    });
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    await removeSupplierSubmitJob(orderNo);
+    await setOrderState(orderNo, {
+      mainStatus: 'REFUNDING',
+      supplierStatus: 'FAIL',
+      refundStatus: 'PENDING',
+      notifyStatus: 'PENDING',
+      monitorStatus: 'TIMEOUT_WARNING',
+      warningDeadlineAt: new Date('2026-03-28T09:10:00.000Z'),
+      expireDeadlineAt: new Date('2026-03-28T10:00:00.000Z'),
+    });
+
+    await runtime.services.orders.handleSupplierSucceeded({
+      orderNo,
+      supplierId: 'late-supplier',
+      supplierOrderNo: 'late-success-order-no',
+      costPrice: order.purchasePrice,
+    });
+
+    const afterLateSuccess = await runtime.services.orders.getOrderByNo(orderNo);
+    expect(afterLateSuccess.mainStatus).toBe('REFUNDING');
+    expect(afterLateSuccess.refundStatus).toBe('PENDING');
+    expect(afterLateSuccess.supplierStatus).toBe('FAIL');
+
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
+
+    const refundedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+    const ledgerActions = await getOrderLedgerActions(orderNo);
+
+    expect(refundedOrder.mainStatus).toBe('REFUNDED');
+    expect(refundedOrder.refundStatus).toBe('SUCCESS');
+    expect(countAction(ledgerActions, 'ORDER_REFUND')).toBe(2);
+  });
+
   test('REFUNDED 但未创建通知的超时订单在后续扫描会补建并继续终态通知', async () => {
     const orderNo = await createOrder({
       nowIso: '2026-03-28T09:00:00.000Z',
