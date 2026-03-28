@@ -499,7 +499,7 @@ export class OrdersService implements OrderContract {
     const order = await this.getOrderByNo(payload.orderNo);
 
     if (order.mainStatus === 'REFUNDED') {
-      if (order.notifyStatus !== 'SUCCESS') {
+      if (['PENDING', 'RETRYING'].includes(order.notifyStatus)) {
         await eventBus.publish('NotificationRequested', {
           orderNo: order.orderNo,
           channelId: order.channelId,

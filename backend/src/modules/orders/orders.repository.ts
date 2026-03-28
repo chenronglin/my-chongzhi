@@ -580,7 +580,7 @@ export class OrdersRepository {
       FROM ordering.orders
       WHERE main_status = 'REFUNDED'
         AND refund_status = 'SUCCESS'
-        AND notify_status <> 'SUCCESS'
+        AND notify_status IN ('PENDING', 'RETRYING')
         AND expire_deadline_at IS NOT NULL
         AND expire_deadline_at <= ${now}
       ORDER BY updated_at ASC, created_at ASC

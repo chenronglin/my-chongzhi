@@ -59,6 +59,10 @@ export class NotificationsService {
       return;
     }
 
+    if (existingTask?.status === 'DEAD_LETTER') {
+      return;
+    }
+
     if (existingTask && ['PENDING', 'SENDING', 'RETRYING'].includes(existingTask.status)) {
       await this.workerContract.enqueue({
         jobType: 'notification.deliver',

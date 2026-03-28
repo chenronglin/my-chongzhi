@@ -214,6 +214,34 @@ async function countNotificationTasks(orderNo: string) {
   return rows[0]?.count ?? 0;
 }
 
+async function setLatestNotificationTaskStatus(orderNo: string, status: string) {
+  await db`
+    UPDATE notification.notification_tasks
+    SET
+      status = ${status},
+      updated_at = NOW()
+    WHERE task_no = (
+      SELECT task_no
+      FROM notification.notification_tasks
+      WHERE order_no = ${orderNo}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    )
+  `;
+}
+
+async function removeNotificationDeliverJobs(orderNo: string) {
+  await db`
+    DELETE FROM worker.worker_jobs
+    WHERE job_type = 'notification.deliver'
+      AND business_key IN (
+        SELECT task_no
+        FROM notification.notification_tasks
+        WHERE order_no = ${orderNo}
+      )
+  `;
+}
+
 async function getOrderLedgerActions(orderNo: string) {
   return db<{ actionType: string }[]>`
     SELECT
@@ -515,5 +543,48 @@ describe.serial('V1 订单超时扫描', () => {
     const notifiedOrder = await runtime.services.orders.getOrderByNo(orderNo);
 
     expect(notifiedOrder.notifyStatus).toBe('SUCCESS');
+  });
+
+  test('REFUNDED 且最新终态通知已进死信时，后续超时扫描不会自动补建新任务', async () => {
+    const orderNo = await createOrder({
+      nowIso: '2026-03-28T09:00:00.000Z',
+      productType: 'FAST',
+      faceValue: 100,
+    });
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    await removeSupplierSubmitJob(orderNo);
+    await setOrderState(orderNo, {
+      mainStatus: 'REFUNDED',
+      supplierStatus: 'FAIL',
+      refundStatus: 'SUCCESS',
+      notifyStatus: 'DEAD_LETTER',
+      monitorStatus: 'TIMEOUT_WARNING',
+      warningDeadlineAt: new Date('2026-03-28T09:10:00.000Z'),
+      expireDeadlineAt: new Date('2026-03-28T10:00:00.000Z'),
+      finishedAt: new Date('2026-03-28T10:00:00.000Z'),
+    });
+
+    await runtime.services.notifications.handleNotificationRequested({
+      orderNo,
+      channelId: order.channelId,
+      notifyType: 'WEBHOOK',
+      triggerReason: 'REFUND_SUCCEEDED',
+    });
+    await setLatestNotificationTaskStatus(orderNo, 'DEAD_LETTER');
+    await removeNotificationDeliverJobs(orderNo);
+
+    const beforeTasks = await listNotificationTasks(orderNo);
+    expect(beforeTasks).toHaveLength(1);
+    expect(beforeTasks[0]?.status).toBe('DEAD_LETTER');
+
+    await enqueueTimeoutScan(new Date('2026-03-28T10:00:01.000Z'));
+
+    const afterTasks = await listNotificationTasks(orderNo);
+    const scannedOrder = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expect(afterTasks).toHaveLength(1);
+    expect(afterTasks[0]?.status).toBe('DEAD_LETTER');
+    expect(scannedOrder.notifyStatus).toBe('DEAD_LETTER');
   });
 });
