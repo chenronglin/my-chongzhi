@@ -370,27 +370,26 @@ export class OrdersRepository {
       finishedAt?: boolean;
     },
   ): Promise<void> {
-    const order = await this.findByOrderNo(orderNo);
-
-    if (!order) {
-      throw new Error('订单不存在');
-    }
-
-    await db`
+    const rows = await db<{ orderNo: string }[]>`
       UPDATE ordering.orders
       SET
-        main_status = ${update.mainStatus ?? order.mainStatus},
-        supplier_status = ${update.supplierStatus ?? order.supplierStatus},
-        notify_status = ${update.notifyStatus ?? order.notifyStatus},
-        refund_status = ${update.refundStatus ?? order.refundStatus},
-        monitor_status = ${update.monitorStatus ?? order.monitorStatus},
+        main_status = COALESCE(${update.mainStatus ?? null}, main_status),
+        supplier_status = COALESCE(${update.supplierStatus ?? null}, supplier_status),
+        notify_status = COALESCE(${update.notifyStatus ?? null}, notify_status),
+        refund_status = COALESCE(${update.refundStatus ?? null}, refund_status),
+        monitor_status = COALESCE(${update.monitorStatus ?? null}, monitor_status),
         exception_tag = COALESCE(${update.exceptionTag ?? null}, exception_tag),
         remark = COALESCE(${update.remark ?? null}, remark),
         finished_at = CASE WHEN ${update.finishedAt ?? false} THEN NOW() ELSE finished_at END,
         version = version + 1,
         updated_at = NOW()
       WHERE order_no = ${orderNo}
+      RETURNING order_no AS "orderNo"
     `;
+
+    if (!rows[0]) {
+      throw new Error('订单不存在');
+    }
   }
 
   async addEvent(input: {

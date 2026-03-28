@@ -6,6 +6,7 @@ import { runSeed } from '@/database/seeds/0001_base.seed';
 import { buildOpenApiCanonicalString, encryptText, signOpenApiPayload } from '@/lib/security';
 import { db, executeFile } from '@/lib/sql';
 import { stableStringify } from '@/lib/utils';
+import { OrdersRepository } from '@/modules/orders/orders.repository';
 
 let runtime: Awaited<ReturnType<typeof buildApp>>;
 const migrationFile = join(import.meta.dir, '../src/database/migrations/0001_init_schemas.sql');
@@ -537,5 +538,70 @@ describe.serial('V1 ISP 充值下单链路', () => {
 
     expect(getOrderResponse.status).toBe(404);
     expect(getEventsResponse.status).toBe(404);
+  });
+
+  test('并发状态推进不会覆盖彼此不相关的字段', async () => {
+    const body = {
+      channelOrderNo: `itest-concurrency-${Date.now()}`,
+      mobile: '13800130000',
+      faceValue: 50,
+      product_type: 'MIXED',
+    };
+
+    const createResponse = await runtime.app.handle(
+      new Request('http://localhost/open-api/orders', {
+        method: 'POST',
+        headers: buildSignedHeaders({
+          path: '/open-api/orders',
+          body,
+        }),
+        body: JSON.stringify(body),
+      }),
+    );
+    const createJson = await readResponseJson(createResponse);
+    const orderNo = String(createJson.data.orderNo);
+    const repository = new OrdersRepository();
+
+    let releaseLock!: () => void;
+    let lockReady!: () => void;
+
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const lockAcquired = new Promise<void>((resolve) => {
+      lockReady = resolve;
+    });
+
+    const heldLock = db.begin(async (tx) => {
+      await tx`
+        SELECT id
+        FROM ordering.orders
+        WHERE order_no = ${orderNo}
+        FOR UPDATE
+      `;
+      lockReady();
+      await lockPromise;
+    });
+
+    await lockAcquired;
+
+    const supplierUpdate = repository.updateStatuses(orderNo, {
+      supplierStatus: 'ACCEPTED',
+      mainStatus: 'PROCESSING',
+    });
+    const notifyUpdate = repository.updateStatuses(orderNo, {
+      notifyStatus: 'SUCCESS',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseLock();
+
+    await Promise.all([heldLock, supplierUpdate, notifyUpdate]);
+
+    const order = await runtime.services.orders.getOrderByNo(orderNo);
+
+    expect(order.mainStatus).toBe('PROCESSING');
+    expect(order.supplierStatus).toBe('ACCEPTED');
+    expect(order.notifyStatus).toBe('SUCCESS');
   });
 });
