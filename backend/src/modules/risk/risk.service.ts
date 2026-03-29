@@ -89,7 +89,7 @@ export class RiskService implements RiskContract {
 
     const rules = await this.repository.listRules();
     const amountRule = rules.find(
-      (rule) => rule.ruleCode === 'AMOUNT_REVIEW' && rule.status === 'ACTIVE',
+      (rule) => rule.ruleCode === 'AMOUNT_REJECT' && rule.status === 'ACTIVE',
     );
 
     if (amountRule) {
@@ -98,8 +98,8 @@ export class RiskService implements RiskContract {
       if (input.amount >= threshold) {
         hitRules.push(amountRule.ruleCode);
         const decision = {
-          decision: 'REVIEW' as const,
-          reason: '订单金额触发人工复核',
+          decision: 'REJECT' as const,
+          reason: '订单金额触发风控拒绝',
           hitRules,
         };
 

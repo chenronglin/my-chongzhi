@@ -1,3 +1,16 @@
+export const workerJobTypes = [
+  'supplier.catalog.full-sync',
+  'supplier.catalog.delta-sync',
+  'supplier.submit',
+  'supplier.query',
+  'supplier.reconcile.inflight',
+  'supplier.reconcile.daily',
+  'order.timeout.scan',
+  'notification.deliver',
+] as const;
+
+export type WorkerJobType = (typeof workerJobTypes)[number];
+
 export type WorkerJobStatus =
   | 'NEW'
   | 'READY'
@@ -10,7 +23,7 @@ export type WorkerJobStatus =
 
 export interface WorkerJob {
   id: string;
-  jobType: string;
+  jobType: WorkerJobType | string;
   businessKey: string;
   payloadJson: Record<string, unknown>;
   status: WorkerJobStatus;
@@ -42,7 +55,7 @@ export interface WorkerDeadLetter {
 }
 
 export interface CreateWorkerJobInput {
-  jobType: string;
+  jobType: WorkerJobType | string;
   businessKey: string;
   payload: Record<string, unknown>;
   maxAttempts?: number;

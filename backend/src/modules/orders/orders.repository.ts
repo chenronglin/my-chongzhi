@@ -2,12 +2,55 @@ import { generateBusinessNo, generateId } from '@/lib/id';
 import { db, first } from '@/lib/sql';
 import { parseJsonValue } from '@/lib/utils';
 import { ordersSql } from '@/modules/orders/orders.sql';
-import type { MainOrderStatus, OrderEventRecord, OrderRecord } from '@/modules/orders/orders.types';
+import type {
+  MainOrderStatus,
+  OrderEventRecord,
+  OrderMonitorStatus,
+  OrderNotifyStatus,
+  OrderRecord,
+  OrderRefundStatus,
+  RequestedProductType,
+  SupplierOrderStatus,
+} from '@/modules/orders/orders.types';
+
+interface TimeoutWarningTransition {
+  orderNo: string;
+  requestId: string;
+  warningDeadlineAt: string | null;
+  previousMonitorStatus: OrderMonitorStatus;
+}
+
+interface TimeoutExpiryTransition {
+  orderNo: string;
+  requestId: string;
+  expireDeadlineAt: string | null;
+  previousMainStatus: MainOrderStatus;
+  previousSupplierStatus: SupplierOrderStatus;
+  previousRefundStatus: OrderRefundStatus;
+  previousMonitorStatus: OrderMonitorStatus;
+}
 
 export class OrdersRepository {
+  async withCreateOrderLock<T>(
+    channelId: string,
+    channelOrderNo: string,
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    return db.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${`order:create:${channelId}:${channelOrderNo}`}))`;
+      return callback();
+    });
+  }
+
   private mapOrder(row: OrderRecord): OrderRecord {
     return {
       ...row,
+      faceValue: Number(row.faceValue),
+      salePrice: Number(row.salePrice),
+      purchasePrice: Number(row.purchasePrice),
+      requestedProductType: row.requestedProductType === 'FAST' ? 'FAST' : 'MIXED',
+      refundStatus: this.parseRefundStatus(row.refundStatus),
+      monitorStatus: this.parseMonitorStatus(row.monitorStatus),
       channelSnapshotJson: parseJsonValue(row.channelSnapshotJson, {}),
       productSnapshotJson: parseJsonValue(row.productSnapshotJson, {}),
       callbackSnapshotJson: parseJsonValue(row.callbackSnapshotJson, {}),
@@ -20,10 +63,23 @@ export class OrdersRepository {
   private mapEvent(row: OrderEventRecord): OrderEventRecord {
     return {
       ...row,
+      idempotencyKey: row.idempotencyKey ?? null,
       beforeStatusJson: parseJsonValue(row.beforeStatusJson, {}),
       afterStatusJson: parseJsonValue(row.afterStatusJson, {}),
       payloadJson: parseJsonValue(row.payloadJson, {}),
     };
+  }
+
+  private parseRefundStatus(value: unknown): OrderRefundStatus {
+    return value === 'PENDING' || value === 'SUCCESS' || value === 'FAIL' ? value : 'NONE';
+  }
+
+  private parseMonitorStatus(value: unknown): OrderMonitorStatus {
+    return value === 'TIMEOUT_WARNING' ||
+      value === 'MANUAL_FOLLOWING' ||
+      value === 'LATE_CALLBACK_EXCEPTION'
+      ? value
+      : 'NORMAL';
   }
 
   async listOrders(): Promise<OrderRecord[]> {
@@ -39,18 +95,21 @@ export class OrdersRepository {
         channel_order_no AS "channelOrderNo",
         channel_id AS "channelId",
         parent_channel_id AS "parentChannelId",
-        product_id AS "productId",
-        sku_id AS "skuId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
         sale_price AS "salePrice",
-        cost_price AS "costPrice",
+        cost_price AS "purchasePrice",
         currency,
-        payment_mode AS "paymentMode",
-        payment_no AS "paymentNo",
         main_status AS "mainStatus",
         payment_status AS "paymentStatus",
         supplier_status AS "supplierStatus",
         notify_status AS "notifyStatus",
-        risk_status AS "riskStatus",
+        requested_product_type AS "requestedProductType",
+        refund_status AS "refundStatus",
+        monitor_status AS "monitorStatus",
         channel_snapshot_json AS "channelSnapshotJson",
         product_snapshot_json AS "productSnapshotJson",
         callback_snapshot_json AS "callbackSnapshotJson",
@@ -63,10 +122,58 @@ export class OrdersRepository {
         request_id AS "requestId",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
-        paid_at AS "paidAt",
+        warning_deadline_at AS "warningDeadlineAt",
+        expire_deadline_at AS "expireDeadlineAt",
         finished_at AS "finishedAt"
       FROM ordering.orders
       WHERE order_no = ${orderNo}
+      LIMIT 1
+    `);
+
+    return row ? this.mapOrder(row) : null;
+  }
+
+  async findByOrderNoAndChannel(channelId: string, orderNo: string): Promise<OrderRecord | null> {
+    const row = await first<OrderRecord>(db<OrderRecord[]>`
+      SELECT
+        id,
+        order_no AS "orderNo",
+        channel_order_no AS "channelOrderNo",
+        channel_id AS "channelId",
+        parent_channel_id AS "parentChannelId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
+        sale_price AS "salePrice",
+        cost_price AS "purchasePrice",
+        currency,
+        main_status AS "mainStatus",
+        payment_status AS "paymentStatus",
+        supplier_status AS "supplierStatus",
+        notify_status AS "notifyStatus",
+        requested_product_type AS "requestedProductType",
+        refund_status AS "refundStatus",
+        monitor_status AS "monitorStatus",
+        channel_snapshot_json AS "channelSnapshotJson",
+        product_snapshot_json AS "productSnapshotJson",
+        callback_snapshot_json AS "callbackSnapshotJson",
+        supplier_route_snapshot_json AS "supplierRouteSnapshotJson",
+        risk_snapshot_json AS "riskSnapshotJson",
+        ext_json AS "extJson",
+        exception_tag AS "exceptionTag",
+        remark,
+        version,
+        request_id AS "requestId",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt",
+        warning_deadline_at AS "warningDeadlineAt",
+        expire_deadline_at AS "expireDeadlineAt",
+        finished_at AS "finishedAt"
+      FROM ordering.orders
+      WHERE channel_id = ${channelId}
+        AND order_no = ${orderNo}
       LIMIT 1
     `);
 
@@ -81,18 +188,21 @@ export class OrdersRepository {
         channel_order_no AS "channelOrderNo",
         channel_id AS "channelId",
         parent_channel_id AS "parentChannelId",
-        product_id AS "productId",
-        sku_id AS "skuId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
         sale_price AS "salePrice",
-        cost_price AS "costPrice",
+        cost_price AS "purchasePrice",
         currency,
-        payment_mode AS "paymentMode",
-        payment_no AS "paymentNo",
         main_status AS "mainStatus",
         payment_status AS "paymentStatus",
         supplier_status AS "supplierStatus",
         notify_status AS "notifyStatus",
-        risk_status AS "riskStatus",
+        requested_product_type AS "requestedProductType",
+        refund_status AS "refundStatus",
+        monitor_status AS "monitorStatus",
         channel_snapshot_json AS "channelSnapshotJson",
         product_snapshot_json AS "productSnapshotJson",
         callback_snapshot_json AS "callbackSnapshotJson",
@@ -105,7 +215,8 @@ export class OrdersRepository {
         request_id AS "requestId",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
-        paid_at AS "paidAt",
+        warning_deadline_at AS "warningDeadlineAt",
+        expire_deadline_at AS "expireDeadlineAt",
         finished_at AS "finishedAt"
       FROM ordering.orders
       WHERE channel_id = ${channelId}
@@ -120,16 +231,21 @@ export class OrdersRepository {
     channelOrderNo: string;
     channelId: string;
     parentChannelId?: string | null;
-    productId: string;
-    skuId: string;
+    mobile: string;
+    province: string;
+    ispName: string;
+    faceValue: number;
+    requestedProductType: RequestedProductType;
+    matchedProductId: string;
     salePrice: number;
-    costPrice: number;
-    paymentMode: string;
+    purchasePrice: number;
     mainStatus: MainOrderStatus;
-    paymentStatus: string;
-    supplierStatus: string;
-    notifyStatus: string;
-    riskStatus: string;
+    supplierStatus: SupplierOrderStatus;
+    notifyStatus: OrderNotifyStatus;
+    refundStatus: OrderRefundStatus;
+    monitorStatus: OrderMonitorStatus;
+    warningDeadlineAt: Date;
+    expireDeadlineAt: Date;
     channelSnapshotJson: Record<string, unknown>;
     productSnapshotJson: Record<string, unknown>;
     callbackSnapshotJson: Record<string, unknown>;
@@ -139,6 +255,10 @@ export class OrdersRepository {
     requestId: string;
   }): Promise<OrderRecord> {
     const orderNo = generateBusinessNo('order');
+    const callbackConfig = parseJsonValue<Record<string, unknown>>(
+      input.callbackSnapshotJson.callbackConfig,
+      {},
+    );
     const rows = await db<OrderRecord[]>`
       INSERT INTO ordering.orders (
         id,
@@ -147,7 +267,10 @@ export class OrdersRepository {
         channel_id,
         parent_channel_id,
         product_id,
-        sku_id,
+        mobile_number,
+        province_name,
+        isp_code,
+        face_value,
         sale_price,
         cost_price,
         currency,
@@ -156,15 +279,23 @@ export class OrdersRepository {
         payment_status,
         supplier_status,
         notify_status,
+        requested_product_type,
+        refund_status,
+        monitor_status,
         risk_status,
+        callback_url,
+        warning_deadline_at,
+        expire_deadline_at,
         channel_snapshot_json,
         product_snapshot_json,
         callback_snapshot_json,
         supplier_route_snapshot_json,
         risk_snapshot_json,
+        exception_tag,
+        remark,
+        request_id,
         ext_json,
         version,
-        request_id,
         created_at,
         updated_at
       )
@@ -174,25 +305,36 @@ export class OrdersRepository {
         ${input.channelOrderNo},
         ${input.channelId},
         ${input.parentChannelId ?? null},
-        ${input.productId},
-        ${input.skuId},
+        ${input.matchedProductId},
+        ${input.mobile},
+        ${input.province},
+        ${input.ispName},
+        ${input.faceValue},
         ${input.salePrice},
-        ${input.costPrice},
+        ${input.purchasePrice},
         'CNY',
-        ${input.paymentMode},
+        'BALANCE',
         ${input.mainStatus},
-        ${input.paymentStatus},
+        'PAID',
         ${input.supplierStatus},
         ${input.notifyStatus},
-        ${input.riskStatus},
+        ${input.requestedProductType},
+        ${input.refundStatus},
+        ${input.monitorStatus},
+        'PASS',
+        ${typeof callbackConfig.callbackUrl === 'string' ? callbackConfig.callbackUrl : null},
+        ${input.warningDeadlineAt},
+        ${input.expireDeadlineAt},
         ${JSON.stringify(input.channelSnapshotJson)},
         ${JSON.stringify(input.productSnapshotJson)},
         ${JSON.stringify(input.callbackSnapshotJson)},
         ${JSON.stringify(input.supplierRouteSnapshotJson)},
         ${JSON.stringify(input.riskSnapshotJson)},
+        NULL,
+        NULL,
+        ${input.requestId},
         ${JSON.stringify(input.extJson)},
         1,
-        ${input.requestId},
         NOW(),
         NOW()
       )
@@ -202,18 +344,21 @@ export class OrdersRepository {
         channel_order_no AS "channelOrderNo",
         channel_id AS "channelId",
         parent_channel_id AS "parentChannelId",
-        product_id AS "productId",
-        sku_id AS "skuId",
+        mobile_number AS "mobile",
+        province_name AS "province",
+        isp_code AS "ispName",
+        face_value AS "faceValue",
+        product_id AS "matchedProductId",
         sale_price AS "salePrice",
-        cost_price AS "costPrice",
+        cost_price AS "purchasePrice",
         currency,
-        payment_mode AS "paymentMode",
-        payment_no AS "paymentNo",
         main_status AS "mainStatus",
         payment_status AS "paymentStatus",
         supplier_status AS "supplierStatus",
         notify_status AS "notifyStatus",
-        risk_status AS "riskStatus",
+        requested_product_type AS "requestedProductType",
+        refund_status AS "refundStatus",
+        monitor_status AS "monitorStatus",
         channel_snapshot_json AS "channelSnapshotJson",
         product_snapshot_json AS "productSnapshotJson",
         callback_snapshot_json AS "callbackSnapshotJson",
@@ -226,7 +371,8 @@ export class OrdersRepository {
         request_id AS "requestId",
         created_at AS "createdAt",
         updated_at AS "updatedAt",
-        paid_at AS "paidAt",
+        warning_deadline_at AS "warningDeadlineAt",
+        expire_deadline_at AS "expireDeadlineAt",
         finished_at AS "finishedAt"
     `;
 
@@ -243,40 +389,35 @@ export class OrdersRepository {
     orderNo: string,
     update: {
       mainStatus?: MainOrderStatus;
-      paymentStatus?: string;
-      supplierStatus?: string;
-      notifyStatus?: string;
-      riskStatus?: string;
-      paymentNo?: string | null;
+      supplierStatus?: SupplierOrderStatus;
+      notifyStatus?: OrderNotifyStatus;
+      refundStatus?: OrderRefundStatus;
+      monitorStatus?: OrderMonitorStatus;
       exceptionTag?: string | null;
       remark?: string | null;
-      paidAt?: boolean;
       finishedAt?: boolean;
     },
   ): Promise<void> {
-    const order = await this.findByOrderNo(orderNo);
-
-    if (!order) {
-      throw new Error('订单不存在');
-    }
-
-    await db`
+    const rows = await db<{ orderNo: string }[]>`
       UPDATE ordering.orders
       SET
-        main_status = ${update.mainStatus ?? order.mainStatus},
-        payment_status = ${update.paymentStatus ?? order.paymentStatus},
-        supplier_status = ${update.supplierStatus ?? order.supplierStatus},
-        notify_status = ${update.notifyStatus ?? order.notifyStatus},
-        risk_status = ${update.riskStatus ?? order.riskStatus},
-        payment_no = COALESCE(${update.paymentNo ?? null}, payment_no),
+        main_status = COALESCE(${update.mainStatus ?? null}, main_status),
+        supplier_status = COALESCE(${update.supplierStatus ?? null}, supplier_status),
+        notify_status = COALESCE(${update.notifyStatus ?? null}, notify_status),
+        refund_status = COALESCE(${update.refundStatus ?? null}, refund_status),
+        monitor_status = COALESCE(${update.monitorStatus ?? null}, monitor_status),
         exception_tag = COALESCE(${update.exceptionTag ?? null}, exception_tag),
         remark = COALESCE(${update.remark ?? null}, remark),
-        paid_at = CASE WHEN ${update.paidAt ?? false} THEN NOW() ELSE paid_at END,
         finished_at = CASE WHEN ${update.finishedAt ?? false} THEN NOW() ELSE finished_at END,
         version = version + 1,
         updated_at = NOW()
       WHERE order_no = ${orderNo}
+      RETURNING order_no AS "orderNo"
     `;
+
+    if (!rows[0]) {
+      throw new Error('订单不存在');
+    }
   }
 
   async addEvent(input: {
@@ -301,7 +442,6 @@ export class OrdersRepository {
         before_status_json,
         after_status_json,
         payload_json,
-        idempotency_key,
         operator,
         request_id,
         occurred_at
@@ -315,12 +455,10 @@ export class OrdersRepository {
         ${JSON.stringify(input.beforeStatusJson)},
         ${JSON.stringify(input.afterStatusJson)},
         ${JSON.stringify(input.payloadJson)},
-        ${input.idempotencyKey},
         ${input.operator},
         ${input.requestId},
         NOW()
       )
-      ON CONFLICT DO NOTHING
     `;
   }
 
@@ -329,11 +467,146 @@ export class OrdersRepository {
     return rows.map((row) => this.mapEvent(row));
   }
 
-  async addRemark(orderNo: string, remark: string, operatorUserId: string | null): Promise<void> {
-    await db`
-      INSERT INTO ordering.order_remarks (id, order_no, remark, operator_user_id, created_at)
-      VALUES (${generateId()}, ${orderNo}, ${remark}, ${operatorUserId}, NOW())
-    `;
+  async deleteOrder(orderNo: string): Promise<void> {
+    await db.begin(async (tx) => {
+      await tx`
+        DELETE FROM ordering.order_events
+        WHERE order_no = ${orderNo}
+      `;
+      await tx`
+        DELETE FROM ordering.orders
+        WHERE order_no = ${orderNo}
+      `;
+    });
+  }
+
+  async addRemark(orderNo: string, remark: string, _operatorUserId: string | null): Promise<void> {
     await this.updateStatuses(orderNo, { remark });
+  }
+
+  async transitionTimeoutWarnings(now: Date): Promise<TimeoutWarningTransition[]> {
+    const rows = await db<TimeoutWarningTransition[]>`
+      WITH eligible AS (
+        SELECT
+          id,
+          order_no AS "orderNo",
+          request_id AS "requestId",
+          warning_deadline_at::text AS "warningDeadlineAt",
+          monitor_status AS "previousMonitorStatus"
+        FROM ordering.orders
+        WHERE main_status IN ('CREATED', 'PROCESSING')
+          AND monitor_status = 'NORMAL'
+          AND warning_deadline_at IS NOT NULL
+          AND warning_deadline_at <= ${now}
+          AND (expire_deadline_at IS NULL OR expire_deadline_at > ${now})
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE ordering.orders AS current
+      SET
+        monitor_status = 'TIMEOUT_WARNING',
+        version = current.version + 1,
+        updated_at = NOW()
+      FROM eligible
+      WHERE current.id = eligible.id
+      RETURNING
+        eligible."orderNo" AS "orderNo",
+        eligible."requestId" AS "requestId",
+        eligible."warningDeadlineAt" AS "warningDeadlineAt",
+        eligible."previousMonitorStatus" AS "previousMonitorStatus"
+    `;
+
+    return rows.map((row) => ({
+      ...row,
+      previousMonitorStatus: this.parseMonitorStatus(row.previousMonitorStatus),
+    }));
+  }
+
+  async transitionTimeoutExpiry(now: Date): Promise<TimeoutExpiryTransition[]> {
+    const rows = await db<TimeoutExpiryTransition[]>`
+      WITH eligible AS (
+        SELECT
+          id,
+          order_no AS "orderNo",
+          request_id AS "requestId",
+          expire_deadline_at::text AS "expireDeadlineAt",
+          main_status AS "previousMainStatus",
+          supplier_status AS "previousSupplierStatus",
+          refund_status AS "previousRefundStatus",
+          monitor_status AS "previousMonitorStatus"
+        FROM ordering.orders
+        WHERE expire_deadline_at IS NOT NULL
+          AND expire_deadline_at <= ${now}
+          AND (
+            (main_status IN ('CREATED', 'PROCESSING') AND refund_status = 'NONE')
+            OR (main_status = 'REFUNDING' AND refund_status = 'PENDING')
+          )
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE ordering.orders AS current
+      SET
+        main_status = 'REFUNDING',
+        supplier_status = 'FAIL',
+        refund_status = 'PENDING',
+        monitor_status = 'TIMEOUT_WARNING',
+        version = current.version + 1,
+        updated_at = NOW()
+      FROM eligible
+      WHERE current.id = eligible.id
+      RETURNING
+        eligible."orderNo" AS "orderNo",
+        eligible."requestId" AS "requestId",
+        eligible."expireDeadlineAt" AS "expireDeadlineAt",
+        eligible."previousMainStatus" AS "previousMainStatus",
+        eligible."previousSupplierStatus" AS "previousSupplierStatus",
+        eligible."previousRefundStatus" AS "previousRefundStatus",
+        eligible."previousMonitorStatus" AS "previousMonitorStatus"
+    `;
+
+    return rows.map((row) => ({
+      ...row,
+      previousMainStatus:
+        row.previousMainStatus === 'PROCESSING' ||
+        row.previousMainStatus === 'SUCCESS' ||
+        row.previousMainStatus === 'FAIL' ||
+        row.previousMainStatus === 'REFUNDING' ||
+        row.previousMainStatus === 'REFUNDED' ||
+        row.previousMainStatus === 'CLOSED'
+          ? row.previousMainStatus
+          : 'CREATED',
+      previousSupplierStatus:
+        row.previousSupplierStatus === 'ACCEPTED' ||
+        row.previousSupplierStatus === 'QUERYING' ||
+        row.previousSupplierStatus === 'SUCCESS' ||
+        row.previousSupplierStatus === 'FAIL'
+          ? row.previousSupplierStatus
+          : 'WAIT_SUBMIT',
+      previousRefundStatus: this.parseRefundStatus(row.previousRefundStatus),
+      previousMonitorStatus: this.parseMonitorStatus(row.previousMonitorStatus),
+    }));
+  }
+
+  async listTimeoutNotificationRecoveryCandidates(now: Date): Promise<OrderRecord[]> {
+    const rows = await db<{ orderNo: string }[]>`
+      SELECT order_no AS "orderNo"
+      FROM ordering.orders
+      WHERE main_status = 'REFUNDED'
+        AND refund_status = 'SUCCESS'
+        AND notify_status IN ('PENDING', 'RETRYING')
+        AND expire_deadline_at IS NOT NULL
+        AND expire_deadline_at <= ${now}
+      ORDER BY updated_at ASC, created_at ASC
+    `;
+
+    const orders: OrderRecord[] = [];
+
+    for (const row of rows) {
+      const order = await this.findByOrderNo(row.orderNo);
+
+      if (order) {
+        orders.push(order);
+      }
+    }
+
+    return orders;
   }
 }

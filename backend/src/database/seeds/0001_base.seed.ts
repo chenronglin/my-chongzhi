@@ -1,45 +1,37 @@
 import type { SQL } from 'bun';
 
 import { env } from '@/lib/env';
-import { generateId } from '@/lib/id';
 import { encryptText, hashPassword } from '@/lib/security';
 
-/**
- * 初始化开发环境可直接使用的基础数据。
- * 这里的 seed 明确要求幂等执行，因此所有写入都使用 upsert 风格。
- */
-export async function runSeed(db: SQL): Promise<void> {
-  const adminUserId = generateId();
-  const superAdminRoleId = generateId();
-  const operatorRoleId = generateId();
-  const financeRoleId = generateId();
-  const riskRoleId = generateId();
-  const supportRoleId = generateId();
-  const channelId = generateId();
-  const credentialId = generateId();
-  const callbackConfigId = generateId();
-  const categoryId = generateId();
-  const productId = generateId();
-  const skuId = generateId();
-  const supplierId = generateId();
-  const supplierConfigId = generateId();
-  const mappingId = generateId();
-  const pricePolicyId = generateId();
-  const limitRuleId = generateId();
-  const authId = generateId();
-  const paymentChannelId = generateId();
-  const riskRuleId = generateId();
-  const profitRuleId = generateId();
-  const platformAccountId = generateId();
-  const channelAccountId = generateId();
-  const dataScopeId = generateId();
-  const templateId = generateId();
+const seedIds = {
+  adminUser: 'seed-admin-user',
+  superAdminRole: 'seed-role-super-admin',
+  demoChannel: 'seed-channel-demo',
+  demoCredential: 'seed-channel-credential-demo',
+  demoCallback: 'seed-channel-callback-demo',
+  demoLimitRule: 'seed-channel-limit-demo',
+  mockSupplier: 'seed-supplier-mock',
+  mockSupplierConfig: 'seed-supplier-config-mock',
+  mixedProduct: 'seed-product-cmcc-mixed-50',
+  fastProduct: 'seed-product-cmcc-fast-100',
+  mixedMapping: 'seed-product-mapping-mixed',
+  fastMapping: 'seed-product-mapping-fast',
+  mobileSegment: 'seed-mobile-segment-1380013',
+  mixedAuthorization: 'seed-channel-auth-mixed',
+  fastAuthorization: 'seed-channel-auth-fast',
+  mixedPrice: 'seed-channel-price-mixed',
+  fastPrice: 'seed-channel-price-fast',
+  platformAccount: 'seed-ledger-account-platform',
+  channelAccount: 'seed-ledger-account-channel',
+  supplierAccount: 'seed-ledger-account-supplier',
+} as const;
 
+export async function runSeed(db: SQL): Promise<void> {
   const passwordHash = await hashPassword(env.seed.adminPassword);
-  const encryptedSecretKey = encryptText(env.seed.secretKey);
-  const encryptedCallbackSecret = encryptText('demo-callback-secret');
-  const encryptedSupplierCredential = encryptText('mock-supplier-token');
-  const encryptedSupplierCallbackSecret = encryptText('mock-supplier-callback');
+  const channelSecret = encryptText(env.seed.secretKey);
+  const callbackSecret = encryptText('demo-callback-secret');
+  const supplierCredential = encryptText('mock-supplier-token');
+  const supplierCallbackSecret = encryptText('mock-supplier-callback');
 
   await db.begin(async (tx) => {
     await tx`
@@ -51,7 +43,7 @@ export async function runSeed(db: SQL): Promise<void> {
         status
       )
       VALUES (
-        ${adminUserId},
+        ${seedIds.adminUser},
         ${env.seed.adminUsername},
         ${passwordHash},
         ${env.seed.adminDisplayName},
@@ -61,18 +53,18 @@ export async function runSeed(db: SQL): Promise<void> {
       SET
         password_hash = EXCLUDED.password_hash,
         display_name = EXCLUDED.display_name,
-        status = 'ACTIVE',
+        status = EXCLUDED.status,
         updated_at = NOW()
     `;
 
     await tx`
       INSERT INTO iam.roles (id, role_code, role_name, status)
-      VALUES
-        (${superAdminRoleId}, 'SUPER_ADMIN', '超级管理员', 'ACTIVE'),
-        (${operatorRoleId}, 'OPERATOR', '平台运营', 'ACTIVE'),
-        (${financeRoleId}, 'FINANCE', '平台财务', 'ACTIVE'),
-        (${riskRoleId}, 'RISK_ADMIN', '平台风控', 'ACTIVE'),
-        (${supportRoleId}, 'SUPPORT', '技术支持', 'ACTIVE')
+      VALUES (
+        ${seedIds.superAdminRole},
+        'SUPER_ADMIN',
+        '超级管理员',
+        'ACTIVE'
+      )
       ON CONFLICT (role_code) DO UPDATE
       SET
         role_name = EXCLUDED.role_name,
@@ -81,39 +73,9 @@ export async function runSeed(db: SQL): Promise<void> {
     `;
 
     await tx`
-      INSERT INTO iam.permissions (id, permission_code, permission_name, permission_group)
-      VALUES
-        (${generateId()}, 'admin:*', '后台全局权限', 'admin'),
-        (${generateId()}, 'orders:*', '订单全权限', 'orders'),
-        (${generateId()}, 'channels:*', '渠道全权限', 'channels'),
-        (${generateId()}, 'products:*', '商品全权限', 'products')
-      ON CONFLICT (permission_code) DO NOTHING
-    `;
-
-    await tx`
       INSERT INTO iam.user_role_relations (user_id, role_id)
-      SELECT user_ref.id, role.id
-      FROM iam.admin_users user_ref
-      CROSS JOIN iam.roles role
-      WHERE user_ref.username = ${env.seed.adminUsername}
-        AND role.role_code = 'SUPER_ADMIN'
+      VALUES (${seedIds.adminUser}, ${seedIds.superAdminRole})
       ON CONFLICT (user_id, role_id) DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO iam.user_data_scopes (id, user_id, scope_type, scope_values_json)
-      SELECT
-        ${dataScopeId},
-        id,
-        'ALL',
-        '[]'::jsonb
-      FROM iam.admin_users
-      WHERE username = ${env.seed.adminUsername}
-      ON CONFLICT (user_id) DO UPDATE
-      SET
-        scope_type = EXCLUDED.scope_type,
-        scope_values_json = EXCLUDED.scope_values_json,
-        updated_at = NOW()
     `;
 
     await tx`
@@ -122,20 +84,23 @@ export async function runSeed(db: SQL): Promise<void> {
         channel_code,
         channel_name,
         channel_type,
-        status
+        status,
+        settlement_mode
       )
       VALUES (
-        ${channelId},
+        ${seedIds.demoChannel},
         ${env.seed.channelCode},
         '演示渠道',
-        'MERCHANT',
-        'ACTIVE'
+        'API',
+        'ACTIVE',
+        'PREPAID'
       )
       ON CONFLICT (channel_code) DO UPDATE
       SET
         channel_name = EXCLUDED.channel_name,
         channel_type = EXCLUDED.channel_type,
         status = EXCLUDED.status,
+        settlement_mode = EXCLUDED.settlement_mode,
         updated_at = NOW()
     `;
 
@@ -148,17 +113,17 @@ export async function runSeed(db: SQL): Promise<void> {
         sign_algorithm,
         status
       )
-      SELECT
-        ${credentialId},
-        id,
+      VALUES (
+        ${seedIds.demoCredential},
+        ${seedIds.demoChannel},
         ${env.seed.accessKey},
-        ${encryptedSecretKey},
+        ${channelSecret},
         'HMAC_SHA256',
         'ACTIVE'
-      FROM channel.channels
-      WHERE channel_code = ${env.seed.channelCode}
+      )
       ON CONFLICT (access_key) DO UPDATE
       SET
+        channel_id = EXCLUDED.channel_id,
         secret_key_encrypted = EXCLUDED.secret_key_encrypted,
         sign_algorithm = EXCLUDED.sign_algorithm,
         status = EXCLUDED.status,
@@ -175,16 +140,15 @@ export async function runSeed(db: SQL): Promise<void> {
         retry_enabled,
         timeout_seconds
       )
-      SELECT
-        ${callbackConfigId},
-        id,
+      VALUES (
+        ${seedIds.demoCallback},
+        ${seedIds.demoChannel},
         'mock://success',
         'HMAC_SHA256',
-        ${encryptedCallbackSecret},
+        ${callbackSecret},
         TRUE,
         5
-      FROM channel.channels
-      WHERE channel_code = ${env.seed.channelCode}
+      )
       ON CONFLICT (channel_id) DO UPDATE
       SET
         callback_url = EXCLUDED.callback_url,
@@ -204,15 +168,14 @@ export async function runSeed(db: SQL): Promise<void> {
         monthly_limit,
         qps_limit
       )
-      SELECT
-        ${limitRuleId},
-        id,
+      VALUES (
+        ${seedIds.demoLimitRule},
+        ${seedIds.demoChannel},
         1000,
         10000,
         100000,
         100
-      FROM channel.channels
-      WHERE channel_code = ${env.seed.channelCode}
+      )
       ON CONFLICT (channel_id) DO UPDATE
       SET
         single_limit = EXCLUDED.single_limit,
@@ -220,107 +183,6 @@ export async function runSeed(db: SQL): Promise<void> {
         monthly_limit = EXCLUDED.monthly_limit,
         qps_limit = EXCLUDED.qps_limit,
         updated_at = NOW()
-    `;
-
-    await tx`
-      INSERT INTO product.product_categories (
-        id,
-        category_name,
-        status,
-        sort_no
-      )
-      VALUES (${categoryId}, '话费充值', 'ACTIVE', 1)
-      ON CONFLICT (id) DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO product.products (
-        id,
-        category_id,
-        product_name,
-        product_type,
-        delivery_type,
-        target_type,
-        status,
-        base_attributes_json
-      )
-      VALUES (
-        ${productId},
-        ${categoryId},
-        '移动话费充值',
-        'TOPUP',
-        'API',
-        'MOBILE',
-        'ACTIVE',
-        ${JSON.stringify({ brand: '中国移动' })}
-      )
-      ON CONFLICT (id) DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO product.product_skus (
-        id,
-        product_id,
-        sku_name,
-        face_value,
-        operator,
-        region,
-        sale_status,
-        base_cost_price,
-        base_sale_price
-      )
-      VALUES (
-        ${skuId},
-        ${productId},
-        '移动 100 元',
-        100,
-        'CMCC',
-        'CN',
-        'ON_SHELF',
-        95,
-        100
-      )
-      ON CONFLICT (id) DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO channel.channel_product_authorizations (
-        id,
-        channel_id,
-        product_id,
-        sku_id,
-        status
-      )
-      SELECT
-        ${authId},
-        c.id,
-        ${productId},
-        ${skuId},
-        'ACTIVE'
-      FROM channel.channels c
-      WHERE c.channel_code = ${env.seed.channelCode}
-      ON CONFLICT DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO channel.channel_price_policies (
-        id,
-        channel_id,
-        sku_id,
-        sale_price,
-        currency,
-        status
-      )
-      SELECT
-        ${pricePolicyId},
-        c.id,
-        ${skuId},
-        100,
-        'CNY',
-        'ACTIVE'
-      FROM channel.channels c
-      WHERE c.channel_code = ${env.seed.channelCode}
-      ON CONFLICT DO NOTHING
     `;
 
     await tx`
@@ -332,7 +194,7 @@ export async function runSeed(db: SQL): Promise<void> {
         status
       )
       VALUES (
-        ${supplierId},
+        ${seedIds.mockSupplier},
         ${env.seed.supplierCode},
         '模拟供应商',
         'MOCK',
@@ -355,15 +217,14 @@ export async function runSeed(db: SQL): Promise<void> {
         callback_secret_encrypted,
         timeout_ms
       )
-      SELECT
-        ${supplierConfigId},
-        id,
+      VALUES (
+        ${seedIds.mockSupplierConfig},
+        ${seedIds.mockSupplier},
         ${JSON.stringify({ mode: 'mock-auto-success' })},
-        ${encryptedSupplierCredential},
-        ${encryptedSupplierCallbackSecret},
+        ${supplierCredential},
+        ${supplierCallbackSecret},
         2000
-      FROM supplier.suppliers
-      WHERE supplier_code = ${env.seed.supplierCode}
+      )
       ON CONFLICT (supplier_id) DO UPDATE
       SET
         config_json = EXCLUDED.config_json,
@@ -374,83 +235,162 @@ export async function runSeed(db: SQL): Promise<void> {
     `;
 
     await tx`
-      INSERT INTO product.sku_supplier_mappings (
+      INSERT INTO product.mobile_segments (
         id,
-        sku_id,
-        supplier_id,
-        supplier_sku_code,
-        priority,
-        weight,
-        route_type,
-        cost_price,
-        status
+        mobile_prefix,
+        province_name,
+        city_name,
+        isp_code,
+        isp_name
       )
-      SELECT
-        ${mappingId},
-        ${skuId},
-        id,
-        'mock-topup-100',
-        1,
-        100,
-        'PRIMARY',
-        95,
-        'ACTIVE'
-      FROM supplier.suppliers
-      WHERE supplier_code = ${env.seed.supplierCode}
-      ON CONFLICT DO NOTHING
+      VALUES (
+        ${seedIds.mobileSegment},
+        '1380013',
+        '广东',
+        '广州',
+        'CMCC',
+        '中国移动'
+      )
+      ON CONFLICT (mobile_prefix) DO UPDATE
+      SET
+        province_name = EXCLUDED.province_name,
+        city_name = EXCLUDED.city_name,
+        isp_code = EXCLUDED.isp_code,
+        isp_name = EXCLUDED.isp_name,
+        updated_at = NOW()
     `;
 
     await tx`
-      INSERT INTO payment.payment_channels (
+      INSERT INTO product.recharge_products (
         id,
-        channel_code,
-        channel_name,
-        provider_type,
-        config_json,
+        product_code,
+        product_name,
+        carrier_code,
+        province_name,
+        face_value,
+        recharge_mode,
+        sales_unit,
         status
       )
-      VALUES (
-        ${paymentChannelId},
-        ${env.seed.paymentChannel},
-        '模拟支付通道',
-        'MOCK',
-        ${JSON.stringify({ mode: 'mock' })},
-        'ACTIVE'
-      )
-      ON CONFLICT (channel_code) DO UPDATE
+      VALUES
+        (
+          ${seedIds.mixedProduct},
+          'cmcc-mixed-50',
+          '广东移动慢充 50 元',
+          'CMCC',
+          '广东',
+          50,
+          'MIXED',
+          'CNY',
+          'ACTIVE'
+        ),
+        (
+          ${seedIds.fastProduct},
+          'cmcc-fast-100',
+          '广东移动快充 100 元',
+          'CMCC',
+          '广东',
+          100,
+          'FAST',
+          'CNY',
+          'ACTIVE'
+        )
+      ON CONFLICT (product_code) DO UPDATE
       SET
-        channel_name = EXCLUDED.channel_name,
-        provider_type = EXCLUDED.provider_type,
-        config_json = EXCLUDED.config_json,
+        product_name = EXCLUDED.product_name,
+        carrier_code = EXCLUDED.carrier_code,
+        province_name = EXCLUDED.province_name,
+        face_value = EXCLUDED.face_value,
+        recharge_mode = EXCLUDED.recharge_mode,
+        sales_unit = EXCLUDED.sales_unit,
         status = EXCLUDED.status,
         updated_at = NOW()
     `;
 
     await tx`
-      INSERT INTO risk.risk_rules (
+      INSERT INTO product.product_supplier_mappings (
         id,
-        rule_code,
-        rule_name,
-        rule_type,
-        config_json,
+        product_id,
+        supplier_id,
+        supplier_product_code,
+        route_type,
         priority,
+        cost_price,
+        sales_status,
+        inventory_quantity,
+        dynamic_updated_at,
         status
       )
-      VALUES (
-        ${riskRuleId},
-        'AMOUNT_REVIEW',
-        '大额订单人工复核',
-        'AMOUNT',
-        ${JSON.stringify({ threshold: 500 })},
-        1,
-        'ACTIVE'
-      )
-      ON CONFLICT (rule_code) DO UPDATE
+      VALUES
+        (
+          ${seedIds.mixedMapping},
+          ${seedIds.mixedProduct},
+          ${seedIds.mockSupplier},
+          'mock-cmcc-mixed-50',
+          'PRIMARY',
+          1,
+          48,
+          'ON_SALE',
+          100,
+          NOW(),
+          'ACTIVE'
+        ),
+        (
+          ${seedIds.fastMapping},
+          ${seedIds.fastProduct},
+          ${seedIds.mockSupplier},
+          'mock-cmcc-fast-100',
+          'PRIMARY',
+          1,
+          96,
+          'ON_SALE',
+          100,
+          NOW(),
+          'ACTIVE'
+        )
+      ON CONFLICT (product_id, supplier_id) DO UPDATE
       SET
-        rule_name = EXCLUDED.rule_name,
-        rule_type = EXCLUDED.rule_type,
-        config_json = EXCLUDED.config_json,
+        supplier_product_code = EXCLUDED.supplier_product_code,
+        route_type = EXCLUDED.route_type,
         priority = EXCLUDED.priority,
+        cost_price = EXCLUDED.cost_price,
+        sales_status = EXCLUDED.sales_status,
+        inventory_quantity = EXCLUDED.inventory_quantity,
+        dynamic_updated_at = EXCLUDED.dynamic_updated_at,
+        status = EXCLUDED.status,
+        updated_at = NOW()
+    `;
+
+    await tx`
+      INSERT INTO channel.channel_product_authorizations (
+        id,
+        channel_id,
+        product_id,
+        status
+      )
+      VALUES
+        (${seedIds.mixedAuthorization}, ${seedIds.demoChannel}, ${seedIds.mixedProduct}, 'ACTIVE'),
+        (${seedIds.fastAuthorization}, ${seedIds.demoChannel}, ${seedIds.fastProduct}, 'ACTIVE')
+      ON CONFLICT (channel_id, product_id) DO UPDATE
+      SET status = EXCLUDED.status
+    `;
+
+    await tx`
+      INSERT INTO channel.channel_price_policies (
+        id,
+        channel_id,
+        product_id,
+        sale_price,
+        currency,
+        status
+      )
+      VALUES
+        (${seedIds.mixedPrice}, ${seedIds.demoChannel}, ${seedIds.mixedProduct}, 50, 'CNY', 'ACTIVE'),
+        (${seedIds.fastPrice}, ${seedIds.demoChannel}, ${seedIds.fastProduct}, 100, 'CNY', 'ACTIVE')
+      ON CONFLICT (channel_id, product_id) DO UPDATE
+      SET
+        sale_price = EXCLUDED.sale_price,
+        currency = EXCLUDED.currency,
         status = EXCLUDED.status,
         updated_at = NOW()
     `;
@@ -466,88 +406,13 @@ export async function runSeed(db: SQL): Promise<void> {
         status
       )
       VALUES
-        (${platformAccountId}, 'PLATFORM', 'SYSTEM', 0, 0, 'CNY', 'ACTIVE')
-      ON CONFLICT (owner_type, owner_id, currency) DO UPDATE
-      SET
-        status = EXCLUDED.status,
-        updated_at = NOW()
-    `;
-
-    await tx`
-      INSERT INTO ledger.accounts (
-        id,
-        owner_type,
-        owner_id,
-        available_balance,
-        frozen_balance,
-        currency,
-        status
-      )
-      SELECT
-        ${channelAccountId},
-        'CHANNEL',
-        id,
-        10000,
-        0,
-        'CNY',
-        'ACTIVE'
-      FROM channel.channels
-      WHERE channel_code = ${env.seed.channelCode}
+        (${seedIds.platformAccount}, 'PLATFORM', 'SYSTEM', 0, 0, 'CNY', 'ACTIVE'),
+        (${seedIds.channelAccount}, 'CHANNEL', ${seedIds.demoChannel}, 10000, 0, 'CNY', 'ACTIVE'),
+        (${seedIds.supplierAccount}, 'SUPPLIER', ${seedIds.mockSupplier}, 0, 0, 'CNY', 'ACTIVE')
       ON CONFLICT (owner_type, owner_id, currency) DO UPDATE
       SET
         available_balance = EXCLUDED.available_balance,
-        status = EXCLUDED.status,
-        updated_at = NOW()
-    `;
-
-    await tx`
-      INSERT INTO ledger.profit_rules (
-        id,
-        rule_name,
-        channel_id,
-        product_id,
-        sku_id,
-        config_json,
-        status
-      )
-      SELECT
-        ${profitRuleId},
-        '默认分润规则',
-        c.id,
-        ${productId},
-        ${skuId},
-        ${JSON.stringify({ platformRate: 0.05 })},
-        'ACTIVE'
-      FROM channel.channels c
-      WHERE c.channel_code = ${env.seed.channelCode}
-      ON CONFLICT DO NOTHING
-    `;
-
-    await tx`
-      INSERT INTO notification.notification_templates (
-        id,
-        template_code,
-        notify_type,
-        subject,
-        body_template,
-        status
-      )
-      VALUES (
-        ${templateId},
-        'ORDER_RESULT',
-        'WEBHOOK',
-        '订单结果通知',
-        ${JSON.stringify({
-          title: '订单结果通知',
-          fields: ['orderNo', 'mainStatus', 'paymentStatus', 'supplierStatus'],
-        })},
-        'ACTIVE'
-      )
-      ON CONFLICT (template_code) DO UPDATE
-      SET
-        notify_type = EXCLUDED.notify_type,
-        subject = EXCLUDED.subject,
-        body_template = EXCLUDED.body_template,
+        frozen_balance = EXCLUDED.frozen_balance,
         status = EXCLUDED.status,
         updated_at = NOW()
     `;

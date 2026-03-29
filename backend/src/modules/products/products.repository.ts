@@ -1,255 +1,129 @@
-import { generateId } from '@/lib/id';
+import { conflict } from '@/lib/errors';
 import { db, first } from '@/lib/sql';
-import { parseJsonValue } from '@/lib/utils';
 import { productsSql } from '@/modules/products/products.sql';
 import type {
-  Product,
-  ProductCategory,
-  ProductSku,
-  SkuSupplierMapping,
+  ProductSupplierMapping,
+  RechargeProduct,
+  RechargeProductType,
 } from '@/modules/products/products.types';
 
 export class ProductsRepository {
-  private mapProduct(row: Product): Product {
+  private mapProduct(row: RechargeProduct): RechargeProduct {
     return {
       ...row,
-      baseAttributesJson: parseJsonValue(row.baseAttributesJson, {}),
+      faceValue: Number(row.faceValue),
     };
   }
 
-  private mapSku(row: ProductSku): ProductSku {
+  private mapSupplierMapping(row: ProductSupplierMapping): ProductSupplierMapping {
     return {
       ...row,
-      extJson: parseJsonValue(row.extJson, {}),
+      costPrice: Number(row.costPrice),
+      inventoryQuantity: Number(row.inventoryQuantity),
     };
   }
 
-  async listProducts(): Promise<Product[]> {
-    const rows = await db.unsafe<Product[]>(productsSql.listProducts);
+  async listProducts(): Promise<RechargeProduct[]> {
+    const rows = await db.unsafe<RechargeProduct[]>(productsSql.listProducts);
     return rows.map((row) => this.mapProduct(row));
   }
 
-  async listCategories(): Promise<ProductCategory[]> {
-    return db<ProductCategory[]>`
-      SELECT
-        id,
-        category_name AS "categoryName",
-        parent_id AS "parentId",
-        status,
-        sort_no AS "sortNo"
-      FROM product.product_categories
-      ORDER BY sort_no ASC, created_at DESC
-    `;
-  }
-
-  async createCategory(input: {
-    categoryName: string;
-    parentId?: string;
-    sortNo?: number;
-  }): Promise<ProductCategory> {
-    const rows = await db<ProductCategory[]>`
-      INSERT INTO product.product_categories (
-        id,
-        category_name,
-        parent_id,
-        status,
-        sort_no,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        ${generateId()},
-        ${input.categoryName},
-        ${input.parentId ?? null},
-        'ACTIVE',
-        ${input.sortNo ?? 0},
-        NOW(),
-        NOW()
-      )
-      RETURNING
-        id,
-        category_name AS "categoryName",
-        parent_id AS "parentId",
-        status,
-        sort_no AS "sortNo"
-    `;
-
-    const category = rows[0];
-
-    if (!category) {
-      throw new Error('创建商品分类失败');
-    }
-
-    return category;
-  }
-
-  async createProduct(input: {
-    categoryId: string;
-    productName: string;
-    productType: string;
-    deliveryType: string;
-    targetType: string;
-  }): Promise<Product> {
-    const rows = await db<Product[]>`
-      INSERT INTO product.products (
-        id,
-        category_id,
-        product_name,
-        product_type,
-        delivery_type,
-        target_type,
-        status,
-        base_attributes_json,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        ${generateId()},
-        ${input.categoryId},
-        ${input.productName},
-        ${input.productType},
-        ${input.deliveryType},
-        ${input.targetType},
-        'ACTIVE',
-        '{}'::jsonb,
-        NOW(),
-        NOW()
-      )
-      RETURNING
-        id,
-        category_id AS "categoryId",
-        product_name AS "productName",
-        product_type AS "productType",
-        delivery_type AS "deliveryType",
-        target_type AS "targetType",
-        status,
-        valid_from AS "validFrom",
-        valid_to AS "validTo",
-        base_attributes_json AS "baseAttributesJson"
-    `;
-
-    const product = rows[0];
-
-    if (!product) {
-      throw new Error('创建商品失败');
-    }
-
-    return this.mapProduct(product);
-  }
-
-  async createSku(input: {
-    productId: string;
-    skuName: string;
+  async findMatchingRechargeProduct(input: {
+    carrierCode: string;
+    province: string;
     faceValue: number;
-    operator?: string;
-    region?: string;
-    baseCostPrice: number;
-    baseSalePrice: number;
-  }): Promise<ProductSku> {
-    const rows = await db<ProductSku[]>`
-      INSERT INTO product.product_skus (
-        id,
-        product_id,
-        sku_name,
-        face_value,
-        operator,
-        region,
-        sale_status,
-        base_cost_price,
-        base_sale_price,
-        ext_json,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        ${generateId()},
-        ${input.productId},
-        ${input.skuName},
-        ${input.faceValue},
-        ${input.operator ?? null},
-        ${input.region ?? null},
-        'ON_SHELF',
-        ${input.baseCostPrice},
-        ${input.baseSalePrice},
-        '{}'::jsonb,
-        NOW(),
-        NOW()
-      )
-      RETURNING
-        id,
-        product_id AS "productId",
-        sku_name AS "skuName",
-        face_value AS "faceValue",
-        operator,
-        region,
-        sale_status AS "saleStatus",
-        base_cost_price AS "baseCostPrice",
-        base_sale_price AS "baseSalePrice",
-        ext_json AS "extJson"
-    `;
-
-    const sku = rows[0];
-
-    if (!sku) {
-      throw new Error('创建 SKU 失败');
-    }
-
-    return this.mapSku(sku);
-  }
-
-  async addSupplierMapping(input: {
-    skuId: string;
-    supplierId: string;
-    supplierSkuCode: string;
-    priority?: number;
-    weight?: number;
-    routeType?: string;
-    costPrice: number;
-  }): Promise<void> {
-    await db`
-      INSERT INTO product.sku_supplier_mappings (
-        id,
-        sku_id,
-        supplier_id,
-        supplier_sku_code,
-        priority,
-        weight,
-        route_type,
-        cost_price,
-        status,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        ${generateId()},
-        ${input.skuId},
-        ${input.supplierId},
-        ${input.supplierSkuCode},
-        ${input.priority ?? 1},
-        ${input.weight ?? 100},
-        ${input.routeType ?? 'PRIMARY'},
-        ${input.costPrice},
-        'ACTIVE',
-        NOW(),
-        NOW()
-      )
-    `;
-  }
-
-  async findProductById(productId: string): Promise<Product | null> {
-    const row = await first<Product>(db<Product[]>`
+    productType: RechargeProductType;
+  }): Promise<RechargeProduct | null> {
+    const provinceMatches = await db<RechargeProduct[]>`
       SELECT
         id,
-        category_id AS "categoryId",
+        product_code AS "productCode",
         product_name AS "productName",
-        product_type AS "productType",
-        delivery_type AS "deliveryType",
-        target_type AS "targetType",
-        status,
-        valid_from AS "validFrom",
-        valid_to AS "validTo",
-        base_attributes_json AS "baseAttributesJson"
-      FROM product.products
+        carrier_code AS "carrierCode",
+        province_name AS "provinceName",
+        face_value AS "faceValue",
+        recharge_mode AS "productType",
+        sales_unit AS "salesUnit",
+        status
+      FROM product.recharge_products AS rp
+      WHERE rp.carrier_code = ${input.carrierCode}
+        AND rp.face_value = ${input.faceValue}
+        AND rp.recharge_mode = ${input.productType}
+        AND rp.status = 'ACTIVE'
+        AND rp.province_name = ${input.province}
+        AND EXISTS (
+          SELECT 1
+          FROM product.product_supplier_mappings AS psm
+          WHERE psm.product_id = rp.id
+            AND psm.status = 'ACTIVE'
+            AND psm.sales_status = 'ON_SALE'
+            AND psm.inventory_quantity > 0
+            AND psm.dynamic_updated_at >= NOW() - INTERVAL '120 minutes'
+        )
+      ORDER BY product_code ASC
+      LIMIT 2
+    `;
+
+    if (provinceMatches.length > 1) {
+      throw conflict('命中多个有效充值商品');
+    }
+
+    const provinceMatch = provinceMatches[0];
+
+    if (provinceMatch) {
+      return this.mapProduct(provinceMatch);
+    }
+
+    const nationalMatches = await db<RechargeProduct[]>`
+      SELECT
+        id,
+        product_code AS "productCode",
+        product_name AS "productName",
+        carrier_code AS "carrierCode",
+        province_name AS "provinceName",
+        face_value AS "faceValue",
+        recharge_mode AS "productType",
+        sales_unit AS "salesUnit",
+        status
+      FROM product.recharge_products AS rp
+      WHERE rp.carrier_code = ${input.carrierCode}
+        AND rp.face_value = ${input.faceValue}
+        AND rp.recharge_mode = ${input.productType}
+        AND rp.status = 'ACTIVE'
+        AND rp.province_name = '全国'
+        AND EXISTS (
+          SELECT 1
+          FROM product.product_supplier_mappings AS psm
+          WHERE psm.product_id = rp.id
+            AND psm.status = 'ACTIVE'
+            AND psm.sales_status = 'ON_SALE'
+            AND psm.inventory_quantity > 0
+            AND psm.dynamic_updated_at >= NOW() - INTERVAL '120 minutes'
+        )
+      ORDER BY product_code ASC
+      LIMIT 2
+    `;
+
+    if (nationalMatches.length > 1) {
+      throw conflict('命中多个有效充值商品');
+    }
+
+    return nationalMatches[0] ? this.mapProduct(nationalMatches[0]) : null;
+  }
+
+  async findProductById(productId: string): Promise<RechargeProduct | null> {
+    const row = await first<RechargeProduct>(db<RechargeProduct[]>`
+      SELECT
+        id,
+        product_code AS "productCode",
+        product_name AS "productName",
+        carrier_code AS "carrierCode",
+        province_name AS "provinceName",
+        face_value AS "faceValue",
+        recharge_mode AS "productType",
+        sales_unit AS "salesUnit",
+        status
+      FROM product.recharge_products
       WHERE id = ${productId}
       LIMIT 1
     `);
@@ -257,43 +131,29 @@ export class ProductsRepository {
     return row ? this.mapProduct(row) : null;
   }
 
-  async findSkuById(skuId: string): Promise<ProductSku | null> {
-    const row = await first<ProductSku>(db<ProductSku[]>`
+  async listMappingsByProductId(productId: string): Promise<ProductSupplierMapping[]> {
+    const rows = await db<ProductSupplierMapping[]>`
       SELECT
         id,
         product_id AS "productId",
-        sku_name AS "skuName",
-        face_value AS "faceValue",
-        operator,
-        region,
-        sale_status AS "saleStatus",
-        base_cost_price AS "baseCostPrice",
-        base_sale_price AS "baseSalePrice",
-        ext_json AS "extJson"
-      FROM product.product_skus
-      WHERE id = ${skuId}
-      LIMIT 1
-    `);
-
-    return row ? this.mapSku(row) : null;
-  }
-
-  async listMappingsBySkuId(skuId: string): Promise<SkuSupplierMapping[]> {
-    return db<SkuSupplierMapping[]>`
-      SELECT
-        id,
-        sku_id AS "skuId",
         supplier_id AS "supplierId",
-        supplier_sku_code AS "supplierSkuCode",
+        supplier_product_code AS "supplierProductCode",
         priority,
-        weight,
         route_type AS "routeType",
         cost_price AS "costPrice",
+        sales_status AS "salesStatus",
+        inventory_quantity AS "inventoryQuantity",
+        dynamic_updated_at AS "dynamicUpdatedAt",
         status
-      FROM product.sku_supplier_mappings
-      WHERE sku_id = ${skuId}
+      FROM product.product_supplier_mappings
+      WHERE product_id = ${productId}
         AND status = 'ACTIVE'
-      ORDER BY priority ASC, weight DESC, created_at ASC
+        AND sales_status = 'ON_SALE'
+        AND inventory_quantity > 0
+        AND dynamic_updated_at >= NOW() - INTERVAL '120 minutes'
+      ORDER BY priority ASC, created_at ASC
     `;
+
+    return rows.map((row) => this.mapSupplierMapping(row));
   }
 }

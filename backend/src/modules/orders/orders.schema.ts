@@ -2,8 +2,9 @@ import { t } from 'elysia';
 
 export const CreateOrderBodySchema = t.Object({
   channelOrderNo: t.String({ minLength: 1 }),
-  skuId: t.String({ minLength: 1 }),
-  paymentMode: t.Union([t.Literal('ONLINE'), t.Literal('BALANCE'), t.Literal('FREE')]),
+  mobile: t.String({ pattern: '^\\d{11}$' }),
+  faceValue: t.Number({ minimum: 1 }),
+  product_type: t.Optional(t.Union([t.Literal('FAST'), t.Literal('MIXED')])),
   ext: t.Optional(t.Record(t.String(), t.Unknown())),
 });
 

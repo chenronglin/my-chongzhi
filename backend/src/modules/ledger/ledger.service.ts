@@ -1,13 +1,9 @@
-import { notFound } from '@/lib/errors';
+import { badRequest, notFound } from '@/lib/errors';
 import type { LedgerContract } from '@/modules/ledger/contracts';
 import type { LedgerRepository } from '@/modules/ledger/ledger.repository';
-import type { OrderContract } from '@/modules/orders/contracts';
 
 export class LedgerService implements LedgerContract {
-  constructor(
-    private readonly repository: LedgerRepository,
-    private readonly orderContract: OrderContract,
-  ) {}
+  constructor(private readonly repository: LedgerRepository) {}
 
   async listAccounts() {
     return this.repository.listAccounts();
@@ -17,34 +13,29 @@ export class LedgerService implements LedgerContract {
     return this.repository.listLedgerEntries();
   }
 
-  async listProfitRules() {
-    return this.repository.listProfitRules();
+  async ensureBalanceSufficient(input: { channelId: string; amount: number }): Promise<void> {
+    const channelAccount = await this.repository.findAccount('CHANNEL', input.channelId);
+
+    if (!channelAccount) {
+      throw notFound('渠道余额账户不存在');
+    }
+
+    if (channelAccount.availableBalance < input.amount) {
+      throw badRequest('渠道余额不足');
+    }
   }
 
-  async createProfitRule(input: {
-    ruleName: string;
-    channelId?: string;
-    productId?: string;
-    skuId?: string;
-    configJson: Record<string, unknown>;
-  }) {
-    return this.repository.createProfitRule(input);
-  }
-
-  async payByBalance(input: {
+  async debitOrderAmount(input: {
     channelId: string;
     orderNo: string;
     amount: number;
-    paymentNo: string;
-  }): Promise<void> {
-    const existing = await this.repository.findLedgerByReference(
-      'ORDER',
-      input.paymentNo,
-      'BALANCE_PAYMENT',
-    );
+  }): Promise<{ referenceNo: string }> {
+    const existing = await this.repository.findLedgerByOrderAction(input.orderNo, 'ORDER_DEBIT');
 
     if (existing) {
-      return;
+      return {
+        referenceNo: existing.referenceNo,
+      };
     }
 
     const channelAccount = await this.repository.findAccount('CHANNEL', input.channelId);
@@ -54,28 +45,60 @@ export class LedgerService implements LedgerContract {
       throw notFound('余额账户不存在');
     }
 
-    await this.repository.transferBalance({
+    return this.repository.transferBalance({
       fromAccountId: channelAccount.id,
       toAccountId: platformAccount.id,
       orderNo: input.orderNo,
       amount: input.amount,
-      referenceNo: input.paymentNo,
-      actionType: 'BALANCE_PAYMENT',
+      referenceNo: input.orderNo,
+      actionType: 'ORDER_DEBIT',
     });
   }
 
-  async handleOnlinePayment(input: {
+  async refundOrderAmount(input: {
+    channelId: string;
     orderNo: string;
     amount: number;
-    paymentNo: string;
-  }): Promise<void> {
-    const existing = await this.repository.findLedgerByReference(
-      'PAYMENT',
-      input.paymentNo,
-      'ONLINE_PAYMENT',
-    );
+  }): Promise<{ referenceNo: string }> {
+    const existing = await this.repository.findLedgerByOrderAction(input.orderNo, 'ORDER_REFUND');
 
     if (existing) {
+      return {
+        referenceNo: existing.referenceNo,
+      };
+    }
+
+    const channelAccount = await this.repository.findAccount('CHANNEL', input.channelId);
+    const platformAccount = await this.repository.findPlatformAccount();
+
+    if (!channelAccount || !platformAccount) {
+      throw notFound('余额账户不存在');
+    }
+
+    return this.repository.transferBalance({
+      fromAccountId: platformAccount.id,
+      toAccountId: channelAccount.id,
+      orderNo: input.orderNo,
+      amount: input.amount,
+      referenceNo: input.orderNo,
+      actionType: 'ORDER_REFUND',
+    });
+  }
+
+  async confirmOrderProfit(input: {
+    orderNo: string;
+    salePrice: number;
+    purchasePrice: number;
+  }): Promise<void> {
+    const existing = await this.repository.findLedgerByOrderAction(input.orderNo, 'ORDER_PROFIT');
+
+    if (existing) {
+      return;
+    }
+
+    const profitAmount = Number((input.salePrice - input.purchasePrice).toFixed(2));
+
+    if (profitAmount === 0) {
       return;
     }
 
@@ -88,86 +111,11 @@ export class LedgerService implements LedgerContract {
     await this.repository.createSingleLedger({
       accountId: platformAccount.id,
       orderNo: input.orderNo,
-      actionType: 'ONLINE_PAYMENT',
-      direction: 'CREDIT',
-      amount: input.amount,
-      referenceType: 'PAYMENT',
-      referenceNo: input.paymentNo,
-    });
-  }
-
-  async handleSettlementTriggered(orderNo: string): Promise<void> {
-    const existing = await this.repository.findLedgerByReference(
-      'ORDER',
-      orderNo,
-      'ORDER_SETTLEMENT',
-    );
-
-    if (existing) {
-      return;
-    }
-
-    const order = await this.orderContract.getLedgerContext(orderNo);
-    const platformAccount = await this.repository.findPlatformAccount();
-
-    if (!platformAccount) {
-      throw notFound('平台账户不存在');
-    }
-
-    if (order.costPrice > 0) {
-      await this.repository.createSingleLedger({
-        accountId: platformAccount.id,
-        orderNo,
-        actionType: 'ORDER_SETTLEMENT',
-        direction: 'DEBIT',
-        amount: order.costPrice,
-        referenceType: 'ORDER',
-        referenceNo: orderNo,
-      });
-    }
-  }
-
-  async handleRefundSuccess(orderNo: string): Promise<void> {
-    const existing = await this.repository.findLedgerByReference('ORDER', orderNo, 'ORDER_REFUND');
-
-    if (existing) {
-      return;
-    }
-
-    const order = await this.orderContract.getLedgerContext(orderNo);
-    const platformAccount = await this.repository.findPlatformAccount();
-
-    if (!platformAccount) {
-      throw notFound('平台账户不存在');
-    }
-
-    if (order.paymentMode === 'BALANCE') {
-      const channelAccount = await this.repository.findAccount('CHANNEL', order.channelId);
-
-      if (!channelAccount) {
-        throw notFound('渠道账户不存在');
-      }
-
-      await this.repository.transferBalance({
-        fromAccountId: platformAccount.id,
-        toAccountId: channelAccount.id,
-        orderNo,
-        amount: order.salePrice,
-        referenceNo: orderNo,
-        actionType: 'ORDER_REFUND',
-      });
-
-      return;
-    }
-
-    await this.repository.createSingleLedger({
-      accountId: platformAccount.id,
-      orderNo,
-      actionType: 'ORDER_REFUND',
-      direction: 'DEBIT',
-      amount: order.salePrice,
+      actionType: 'ORDER_PROFIT',
+      direction: profitAmount > 0 ? 'CREDIT' : 'DEBIT',
+      amount: Math.abs(profitAmount),
       referenceType: 'ORDER',
-      referenceNo: orderNo,
+      referenceNo: input.orderNo,
     });
   }
 }

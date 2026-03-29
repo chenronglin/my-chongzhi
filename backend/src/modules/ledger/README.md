@@ -2,23 +2,18 @@
 
 ## 模块职责
 
-- 维护账户、流水、分润规则、退款冲正、结算与对账记录。
+- 维护账户、流水与退款冲正。
 - 作为平台资金唯一归口，为支付和订单主链路提供资金事实。
 
 ## 核心表
 
 - `ledger.accounts`
 - `ledger.account_ledgers`
-- `ledger.profit_rules`
-- `ledger.settlement_statements`
-- `ledger.reconciliation_records`
 
 ## 核心接口
 
 - `GET /admin/accounts`
 - `GET /admin/ledger-entries`
-- `GET /admin/profit-rules`
-- `POST /admin/profit-rules`
 - `POST /internal/settlement/accounts/freeze`
 - `POST /internal/settlement/accounts/unfreeze`
 

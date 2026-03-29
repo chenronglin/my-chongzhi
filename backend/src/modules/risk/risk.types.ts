@@ -9,7 +9,7 @@ export interface RiskRule {
 }
 
 export interface RiskDecision {
-  decision: 'PASS' | 'REVIEW' | 'REJECT' | 'DEGRADE';
+  decision: 'PASS' | 'REJECT';
   reason: string;
   hitRules: string[];
 }

@@ -3,26 +3,6 @@
  * 在当前模块化单体架构下，使用它来模拟服务之间的标准事件驱动。
  */
 export type AppEventMap = {
-  OrderCreated: {
-    orderNo: string;
-  };
-  RiskDecisionMade: {
-    orderNo: string;
-    channelId: string;
-    decision: 'PASS' | 'REVIEW' | 'REJECT' | 'DEGRADE';
-    reason: string;
-  };
-  PaymentSucceeded: {
-    orderNo: string;
-    paymentNo: string;
-    paymentMode: string;
-    paidAmount: number;
-  };
-  PaymentFailed: {
-    orderNo: string;
-    paymentNo: string;
-    reason: string;
-  };
   SupplierAccepted: {
     orderNo: string;
     supplierId: string;
@@ -41,21 +21,11 @@ export type AppEventMap = {
     supplierOrderNo: string;
     reason: string;
   };
-  RefundRequested: {
-    orderNo: string;
-    refundNo: string;
-    reason: string;
-  };
-  RefundSucceeded: {
-    orderNo: string;
-    refundNo: string;
-    source: 'payment' | 'supplier';
-  };
   NotificationRequested: {
     orderNo: string;
     channelId: string;
-    notifyType: 'WEBHOOK' | 'SMS' | 'EMAIL';
-    triggerReason: string;
+    notifyType: 'WEBHOOK';
+    triggerReason: 'ORDER_SUCCESS' | 'REFUND_SUCCEEDED';
   };
   NotificationSucceeded: {
     orderNo: string;

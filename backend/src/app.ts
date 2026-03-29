@@ -1,18 +1,16 @@
+import { openapi } from '@elysiajs/openapi';
 import { Elysia } from 'elysia';
 
 import { env } from '@/lib/env';
 import { eventBus } from '@/lib/event-bus';
-import { generateBusinessNo } from '@/lib/id';
-import { signJwt } from '@/lib/jwt-token';
 import { getRequestIdFromRequest } from '@/lib/route-meta';
 import { createChannelsModule } from '@/modules/channels';
 import { createIamModule } from '@/modules/iam';
 import { createLedgerModule } from '@/modules/ledger';
+import type { LedgerContract } from '@/modules/ledger/contracts';
+import type { LedgerService } from '@/modules/ledger/ledger.service';
 import { createNotificationsModule } from '@/modules/notifications';
 import { createOrdersModule } from '@/modules/orders';
-import type { OrderContract } from '@/modules/orders/contracts';
-import type { OrdersService } from '@/modules/orders/orders.service';
-import { createPaymentsModule } from '@/modules/payments';
 import { createProductsModule } from '@/modules/products';
 import { createRiskModule } from '@/modules/risk';
 import { createSuppliersModule } from '@/modules/suppliers';
@@ -25,19 +23,19 @@ interface BuildAppOptions {
   startWorkerScheduler?: boolean;
 }
 
-function createOrderContractProxy(getService: () => OrdersService): OrderContract {
+function createLedgerContractProxy(getService: () => LedgerService): LedgerContract {
   return {
-    getOrderByNo(orderNo: string) {
-      return getService().getOrderByNo(orderNo);
+    ensureBalanceSufficient(input) {
+      return getService().ensureBalanceSufficient(input);
     },
-    getSupplierExecutionContext(orderNo: string) {
-      return getService().getSupplierExecutionContext(orderNo);
+    debitOrderAmount(input) {
+      return getService().debitOrderAmount(input);
     },
-    getNotificationContext(orderNo: string) {
-      return getService().getNotificationContext(orderNo);
+    refundOrderAmount(input) {
+      return getService().refundOrderAmount(input);
     },
-    getLedgerContext(orderNo: string) {
-      return getService().getLedgerContext(orderNo);
+    confirmOrderProfit(input) {
+      return getService().confirmOrderProfit(input);
     },
   };
 }
@@ -50,76 +48,90 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const channelsModule = createChannelsModule(iamModule.service);
   const productsModule = createProductsModule(iamModule.service, channelsModule.service);
   const riskModule = createRiskModule(iamModule.service);
-
-  let ordersServiceRef: OrdersService | null = null;
-  const orderContract = createOrderContractProxy(() => {
-    if (!ordersServiceRef) {
-      throw new Error('订单服务尚未完成初始化');
+  let ledgerServiceRef: LedgerService | null = null;
+  const ledgerContract = createLedgerContractProxy(() => {
+    if (!ledgerServiceRef) {
+      throw new Error('账务服务尚未完成初始化');
     }
 
-    return ordersServiceRef;
+    return ledgerServiceRef;
   });
-
-  const ledgerModule = createLedgerModule(iamModule.service, orderContract);
-  const paymentsModule = createPaymentsModule(iamModule.service, ledgerModule.service);
   const ordersModule = createOrdersModule({
     channelContract: channelsModule.contract,
     productContract: productsModule.contract,
     riskContract: riskModule.contract,
-    paymentContract: paymentsModule.contract,
+    ledgerContract,
     workerContract: workerModule.contract,
     channelsService: channelsModule.service,
     iamService: iamModule.service,
   });
-
-  ordersServiceRef = ordersModule.service;
+  const ledgerModule = createLedgerModule(iamModule.service);
+  ledgerServiceRef = ledgerModule.service;
 
   const suppliersModule = createSuppliersModule({
     iamService: iamModule.service,
-    orderContract,
+    orderContract: ordersModule.contract,
     workerContract: workerModule.contract,
   });
   const notificationsModule = createNotificationsModule({
     iamService: iamModule.service,
-    orderContract,
+    orderContract: ordersModule.contract,
     workerContract: workerModule.contract,
   });
 
   // 统一注册 Worker 处理器。
+  workerModule.service.registerHandler('supplier.catalog.full-sync', async (payload) => {
+    await suppliersModule.service.syncFullCatalog({
+      supplierCode: String(payload.supplierCode ?? ''),
+      items: Array.isArray(payload.items) ? (payload.items as any[]) : [],
+    });
+  });
+  workerModule.service.registerHandler('supplier.catalog.delta-sync', async (payload) => {
+    await suppliersModule.service.syncDynamicCatalog({
+      supplierCode: String(payload.supplierCode ?? ''),
+      items: Array.isArray(payload.items) ? (payload.items as any[]) : [],
+    });
+  });
   workerModule.service.registerHandler('supplier.submit', (payload) =>
-    suppliersModule.service.handleSupplierSubmitJob(payload),
+    suppliersModule.service.submitOrder({
+      orderNo: String(payload.orderNo ?? ''),
+    }),
   );
   workerModule.service.registerHandler('supplier.query', (payload) =>
-    suppliersModule.service.handleSupplierQueryJob(payload),
+    suppliersModule.service.queryOrder({
+      orderNo: String(payload.orderNo ?? ''),
+      supplierOrderNo: String(payload.supplierOrderNo ?? ''),
+      attemptIndex: Number(payload.attemptIndex ?? 0),
+    }),
   );
+  workerModule.service.registerHandler('supplier.reconcile.inflight', async () => {
+    await suppliersModule.service.runInflightReconcile();
+  });
+  workerModule.service.registerHandler('supplier.reconcile.daily', async (payload) => {
+    await suppliersModule.service.runDailyReconcile({
+      reconcileDate: typeof payload.reconcileDate === 'string' ? payload.reconcileDate : undefined,
+    });
+  });
+  workerModule.service.registerHandler('order.timeout.scan', async (payload) => {
+    const requestedNow = typeof payload.now === 'string' ? new Date(payload.now) : new Date();
+    const scanNow = Number.isNaN(requestedNow.getTime()) ? new Date() : requestedNow;
+
+    await ordersModule.service.scanTimeouts(scanNow);
+  });
   workerModule.service.registerHandler('notification.deliver', (payload) =>
     notificationsModule.service.handleDeliverJob(payload),
   );
 
   // 统一注册领域事件订阅。
-  eventBus.subscribe('PaymentSucceeded', (payload) =>
-    ordersModule.service.handlePaymentSucceeded(payload),
-  );
-  eventBus.subscribe('PaymentFailed', (payload) =>
-    ordersModule.service.handlePaymentFailed(payload),
-  );
   eventBus.subscribe('SupplierAccepted', (payload) =>
     ordersModule.service.handleSupplierAccepted(payload),
   );
-  eventBus.subscribe('SupplierSucceeded', async (payload) => {
-    await ordersModule.service.handleSupplierSucceeded(payload);
-    await ledgerModule.service.handleSettlementTriggered(payload.orderNo);
-  });
+  eventBus.subscribe('SupplierSucceeded', (payload) =>
+    ordersModule.service.handleSupplierSucceeded(payload),
+  );
   eventBus.subscribe('SupplierFailed', (payload) =>
     ordersModule.service.handleSupplierFailed(payload),
   );
-  eventBus.subscribe('RefundRequested', (payload) =>
-    paymentsModule.service.handleRefundRequested(payload),
-  );
-  eventBus.subscribe('RefundSucceeded', async (payload) => {
-    await ordersModule.service.handleRefundSucceeded(payload);
-    await ledgerModule.service.handleRefundSuccess(payload.orderNo);
-  });
   eventBus.subscribe('NotificationRequested', (payload) =>
     notificationsModule.service.handleNotificationRequested(payload),
   );
@@ -131,6 +143,24 @@ export async function buildApp(options: BuildAppOptions = {}) {
   );
 
   const app = new Elysia()
+    .use(
+      openapi({
+        documentation: {
+          info: {
+            title: 'ISP 话费充值平台 API',
+            version: '1.0.0',
+            description: 'ISP 话费充值 V1 的后台、开放、内部接口文档',
+          },
+          tags: [
+            { name: 'open-api', description: '渠道开放接口' },
+            { name: 'admin', description: '后台管理接口' },
+            { name: 'internal', description: '内部服务接口' },
+            { name: 'callbacks', description: '供应商回调接口' },
+          ],
+        },
+        path: '/openapi',
+      }),
+    )
     .use(createRequestContextPlugin())
     .use(createErrorPlugin())
     .use(createAuthPlugin())
@@ -149,7 +179,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
     .use(riskModule.routes)
     .use(workerModule.routes)
     .use(ledgerModule.routes)
-    .use(paymentsModule.routes)
     .use(ordersModule.routes)
     .use(suppliersModule.routes)
     .use(notificationsModule.routes);
@@ -167,23 +196,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
       risk: riskModule.service,
       worker: workerModule.service,
       ledger: ledgerModule.service,
-      payments: paymentsModule.service,
       orders: ordersModule.service,
       suppliers: suppliersModule.service,
       notifications: notificationsModule.service,
-    },
-    async issueInternalToken(serviceName = 'integration-test'): Promise<string> {
-      return signJwt(
-        {
-          sub: serviceName,
-          type: 'internal',
-          roleIds: [],
-          scope: 'internal',
-          jti: generateBusinessNo('internal'),
-        },
-        env.internalJwtSecret,
-        5 * 60,
-      );
     },
     stop() {
       workerModule.service.stopScheduler();

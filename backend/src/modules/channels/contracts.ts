@@ -13,7 +13,6 @@ export interface ChannelContract {
   getOrderPolicy(input: {
     channelId: string;
     productId: string;
-    skuId: string;
     orderAmount: number;
   }): Promise<OrderPolicy>;
   getCallbackConfig(channelId: string): Promise<OrderPolicy['callbackConfig']>;

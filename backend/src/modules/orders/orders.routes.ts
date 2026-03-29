@@ -41,24 +41,32 @@ export function createOrdersRoutes({
 
         return ok(
           requestId,
-          await ordersService.createOrder({
-            channelId: openAuth.channel.id,
-            channelOrderNo: body.channelOrderNo,
-            skuId: body.skuId,
-            paymentMode: body.paymentMode,
-            extJson: body.ext ?? {},
-            requestId,
-            clientIp,
-          }),
+          ordersService.toOpenOrderRecord(
+            await ordersService.createOrder({
+              channelId: openAuth.channel.id,
+              channelOrderNo: body.channelOrderNo,
+              mobile: body.mobile,
+              faceValue: body.faceValue,
+              productType: body.product_type,
+              extJson: body.ext ?? {},
+              requestId,
+              clientIp,
+            }),
+          ),
         );
       },
       {
         body: CreateOrderBodySchema,
+        detail: {
+          tags: ['open-api'],
+          summary: '创建充值订单',
+          description: '渠道侧使用手机号、面值与充值类型创建 ISP 充值订单。',
+        },
       },
     )
     .get('/:orderNo', async ({ params, request }) => {
       const requestId = getRequestIdFromRequest(request);
-      await channelsService.authenticateOpenRequest({
+      const openAuth = await channelsService.authenticateOpenRequest({
         accessKey: request.headers.get('AccessKey') ?? '',
         signature: request.headers.get('Sign') ?? '',
         timestamp: request.headers.get('Timestamp') ?? '',
@@ -67,11 +75,14 @@ export function createOrdersRoutes({
         path: new URL(request.url).pathname,
         bodyText: '',
       });
-      return ok(requestId, await ordersService.getOrderByNo(params.orderNo));
+      return ok(
+        requestId,
+        await ordersService.getOpenOrderByNoForChannel(openAuth.channel.id, params.orderNo),
+      );
     })
     .get('/:orderNo/events', async ({ params, request }) => {
       const requestId = getRequestIdFromRequest(request);
-      await channelsService.authenticateOpenRequest({
+      const openAuth = await channelsService.authenticateOpenRequest({
         accessKey: request.headers.get('AccessKey') ?? '',
         signature: request.headers.get('Sign') ?? '',
         timestamp: request.headers.get('Timestamp') ?? '',
@@ -80,7 +91,10 @@ export function createOrdersRoutes({
         path: new URL(request.url).pathname,
         bodyText: '',
       });
-      return ok(requestId, await ordersService.listEvents(params.orderNo));
+      return ok(
+        requestId,
+        await ordersService.listOpenEventsForChannel(openAuth.channel.id, params.orderNo),
+      );
     });
 
   const adminRoutes = new Elysia({ prefix: '/admin/orders' })
@@ -139,38 +153,11 @@ export function createOrdersRoutes({
       const requestId = getRequestIdFromRequest(request);
       const payload = await verifyAdminAuthorizationHeader(request.headers.get('authorization'));
       await iamService.requireActiveAdmin(payload.sub);
-      const order = await ordersService.getOrderByNo(params.orderNo);
-      await ordersService.handleNotificationFailed({
-        orderNo: order.orderNo,
-        taskNo: 'manual-retry',
-        reason: '管理员手工重试通知',
-      });
+      await ordersService.retryNotification(params.orderNo);
       return ok(requestId, { success: true });
     });
 
   const internalRoutes = new Elysia({ prefix: '/internal/orders' })
-    .post('/:orderNo/payment-events', async ({ params, body, request }) => {
-      const requestId = getRequestIdFromRequest(request);
-      await verifyInternalAuthorizationHeader(request.headers.get('authorization'));
-      const payloadBody = body as Record<string, any>;
-
-      if (payloadBody.status === 'SUCCESS') {
-        await ordersService.handlePaymentSucceeded({
-          orderNo: params.orderNo,
-          paymentNo: String(payloadBody.paymentNo),
-          paymentMode: String(payloadBody.paymentMode),
-          paidAmount: Number(payloadBody.paidAmount),
-        });
-      } else {
-        await ordersService.handlePaymentFailed({
-          orderNo: params.orderNo,
-          paymentNo: String(payloadBody.paymentNo),
-          reason: String(payloadBody.reason ?? '支付失败'),
-        });
-      }
-
-      return ok(requestId, { success: true });
-    })
     .post('/:orderNo/supplier-events', async ({ params, body, request }) => {
       const requestId = getRequestIdFromRequest(request);
       await verifyInternalAuthorizationHeader(request.headers.get('authorization'));

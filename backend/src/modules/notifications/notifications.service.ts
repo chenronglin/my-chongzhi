@@ -1,6 +1,11 @@
+import { badRequest } from '@/lib/errors';
 import { eventBus } from '@/lib/event-bus';
 import { decryptText, signOpenApiPayload } from '@/lib/security';
 import type { NotificationsRepository } from '@/modules/notifications/notifications.repository';
+import type {
+  NotificationTaskType,
+  NotificationTriggerReason,
+} from '@/modules/notifications/notifications.types';
 import type { OrderContract } from '@/modules/orders/contracts';
 import type { WorkerContract } from '@/modules/worker/contracts';
 
@@ -26,19 +31,49 @@ export class NotificationsService {
   async handleNotificationRequested(input: {
     orderNo: string;
     channelId: string;
-    notifyType: 'WEBHOOK' | 'SMS' | 'EMAIL';
-    triggerReason: string;
+    notifyType: NotificationTaskType;
+    triggerReason: NotificationTriggerReason;
   }) {
     const order = await this.orderContract.getNotificationContext(input.orderNo);
+
+    if (
+      (input.triggerReason === 'ORDER_SUCCESS' && order.mainStatus !== 'SUCCESS') ||
+      (input.triggerReason === 'REFUND_SUCCEEDED' &&
+        (order.mainStatus !== 'REFUNDED' || order.refundStatus !== 'SUCCESS'))
+    ) {
+      throw badRequest('仅允许为终态订单创建对应通知');
+    }
+
     const callbackConfig = order.callbackSnapshotJson.callbackConfig as Record<string, unknown>;
     const payload = {
       orderNo: order.orderNo,
       mainStatus: order.mainStatus,
-      paymentStatus: order.paymentStatus,
       supplierStatus: order.supplierStatus,
       notifyStatus: order.notifyStatus,
+      refundStatus: order.refundStatus,
       triggerReason: input.triggerReason,
     };
+    const existingTask = await this.repository.findLatestTaskByOrderNo(order.orderNo);
+
+    if (existingTask?.status === 'SUCCESS') {
+      return;
+    }
+
+    if (existingTask?.status === 'DEAD_LETTER') {
+      return;
+    }
+
+    if (existingTask && ['PENDING', 'SENDING', 'RETRYING'].includes(existingTask.status)) {
+      await this.workerContract.enqueue({
+        jobType: 'notification.deliver',
+        businessKey: existingTask.taskNo,
+        payload: {
+          taskNo: existingTask.taskNo,
+        },
+      });
+      return;
+    }
+
     const destination = String(callbackConfig.callbackUrl ?? 'mock://success');
     const secret = decryptText(String(callbackConfig.secretEncrypted));
     const signature = signOpenApiPayload(secret, JSON.stringify(payload));

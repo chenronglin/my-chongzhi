@@ -66,6 +66,5 @@ export const env = {
     accessKey: Bun.env.SEED_ACCESS_KEY ?? 'demo-access-key',
     secretKey: Bun.env.SEED_SECRET_KEY ?? 'demo-secret-key',
     supplierCode: Bun.env.SEED_SUPPLIER_CODE ?? 'mock-supplier',
-    paymentChannel: Bun.env.SEED_PAYMENT_CHANNEL ?? 'mockpay',
   },
 };

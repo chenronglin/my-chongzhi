@@ -189,7 +189,6 @@ export function createChannelsRoutes({ channelsService, iamService }: ChannelsRo
         .getOrderPolicy({
           channelId: auth.channel.id,
           productId: '',
-          skuId: '',
           orderAmount: 0,
         })
         .catch(() => null);
@@ -223,7 +222,6 @@ export function createChannelsRoutes({ channelsService, iamService }: ChannelsRo
       const result = await channelsService.getOrderPolicy({
         channelId: params.channelId,
         productId: String(query.productId ?? ''),
-        skuId: String(query.skuId ?? ''),
         orderAmount: Number(query.orderAmount ?? 0),
       });
 

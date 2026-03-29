@@ -1,92 +1,47 @@
 import { badRequest, notFound } from '@/lib/errors';
+import { lookupMobileSegment } from '@/lib/mobile-lookup';
 import type { ProductContract } from '@/modules/products/contracts';
 import type { ProductsRepository } from '@/modules/products/products.repository';
+import type { RechargeProductType } from '@/modules/products/products.types';
 
 export class ProductsService implements ProductContract {
   constructor(private readonly repository: ProductsRepository) {}
-
-  async listCategories() {
-    return this.repository.listCategories();
-  }
 
   async listProducts() {
     return this.repository.listProducts();
   }
 
-  async createCategory(input: { categoryName: string; parentId?: string; sortNo?: number }) {
-    return this.repository.createCategory(input);
-  }
-
-  async createProduct(input: {
-    categoryId: string;
-    productName: string;
-    productType: string;
-    deliveryType: string;
-    targetType: string;
-  }) {
-    return this.repository.createProduct(input);
-  }
-
-  async createSku(input: {
-    productId: string;
-    skuName: string;
+  async matchRechargeProduct(input: {
+    mobile: string;
     faceValue: number;
-    operator?: string;
-    region?: string;
-    baseCostPrice: number;
-    baseSalePrice: number;
+    productType?: RechargeProductType;
   }) {
-    return this.repository.createSku(input);
-  }
-
-  async addSupplierMapping(input: {
-    skuId: string;
-    supplierId: string;
-    supplierSkuCode: string;
-    priority?: number;
-    weight?: number;
-    routeType?: string;
-    costPrice: number;
-  }) {
-    await this.repository.addSupplierMapping(input);
-  }
-
-  async getSkuOrderSnapshot(skuId: string) {
-    const sku = await this.repository.findSkuById(skuId);
-
-    if (!sku) {
-      throw notFound('SKU 不存在');
+    if (!Number.isFinite(input.faceValue) || input.faceValue <= 0) {
+      throw badRequest('faceValue 必须大于 0');
     }
 
-    const product = await this.repository.findProductById(sku.productId);
+    const mobileContext = await lookupMobileSegment(input.mobile);
+    const product = await this.repository.findMatchingRechargeProduct({
+      carrierCode: mobileContext.ispName,
+      province: mobileContext.province,
+      faceValue: input.faceValue,
+      productType: input.productType ?? 'MIXED',
+    });
 
     if (!product) {
-      throw notFound('商品不存在');
+      throw notFound('未匹配到可用充值商品');
     }
 
-    if (product.status !== 'ACTIVE' || sku.saleStatus !== 'ON_SHELF') {
-      throw badRequest('商品或 SKU 当前不可售');
-    }
-
-    const supplierCandidates = await this.repository.listMappingsBySkuId(skuId);
+    const supplierCandidates = await this.repository.listMappingsByProductId(product.id);
 
     if (supplierCandidates.length === 0) {
-      throw badRequest('SKU 暂无可用供应商映射');
+      throw badRequest('商品暂无可用供应商映射');
     }
 
     return {
+      mobileContext,
       product,
-      sku,
       supplierCandidates,
-    };
-  }
-
-  async isSkuSaleable(skuId: string) {
-    const snapshot = await this.getSkuOrderSnapshot(skuId);
-
-    return {
-      saleable: true,
-      snapshot,
     };
   }
 }

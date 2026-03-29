@@ -1,21 +1,29 @@
-CREATE SCHEMA IF NOT EXISTS iam;
-CREATE SCHEMA IF NOT EXISTS channel;
-CREATE SCHEMA IF NOT EXISTS product;
-CREATE SCHEMA IF NOT EXISTS ordering;
-CREATE SCHEMA IF NOT EXISTS payment;
-CREATE SCHEMA IF NOT EXISTS supplier;
-CREATE SCHEMA IF NOT EXISTS ledger;
-CREATE SCHEMA IF NOT EXISTS risk;
-CREATE SCHEMA IF NOT EXISTS notification;
-CREATE SCHEMA IF NOT EXISTS worker;
+DROP SCHEMA IF EXISTS iam CASCADE;
+DROP SCHEMA IF EXISTS channel CASCADE;
+DROP SCHEMA IF EXISTS product CASCADE;
+DROP SCHEMA IF EXISTS ordering CASCADE;
+DROP SCHEMA IF EXISTS supplier CASCADE;
+DROP SCHEMA IF EXISTS ledger CASCADE;
+DROP SCHEMA IF EXISTS risk CASCADE;
+DROP SCHEMA IF EXISTS notification CASCADE;
+DROP SCHEMA IF EXISTS worker CASCADE;
 
-CREATE TABLE IF NOT EXISTS iam.admin_users (
+CREATE SCHEMA iam;
+CREATE SCHEMA channel;
+CREATE SCHEMA product;
+CREATE SCHEMA ordering;
+CREATE SCHEMA supplier;
+CREATE SCHEMA ledger;
+CREATE SCHEMA risk;
+CREATE SCHEMA notification;
+CREATE SCHEMA worker;
+
+CREATE TABLE iam.admin_users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   display_name TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'ACTIVE',
-  department_id TEXT,
   mobile TEXT,
   email TEXT,
   last_login_at TIMESTAMPTZ,
@@ -23,7 +31,7 @@ CREATE TABLE IF NOT EXISTS iam.admin_users (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS iam.roles (
+CREATE TABLE iam.roles (
   id TEXT PRIMARY KEY,
   role_code TEXT NOT NULL UNIQUE,
   role_name TEXT NOT NULL,
@@ -32,73 +40,38 @@ CREATE TABLE IF NOT EXISTS iam.roles (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS iam.permissions (
-  id TEXT PRIMARY KEY,
-  permission_code TEXT NOT NULL UNIQUE,
-  permission_name TEXT NOT NULL,
-  permission_group TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS iam.user_role_relations (
+CREATE TABLE iam.user_role_relations (
   user_id TEXT NOT NULL,
   role_id TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (user_id, role_id)
 );
 
-CREATE TABLE IF NOT EXISTS iam.role_permission_relations (
-  role_id TEXT NOT NULL,
-  permission_id TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (role_id, permission_id)
-);
-
-CREATE TABLE IF NOT EXISTS iam.user_data_scopes (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL UNIQUE,
-  scope_type TEXT NOT NULL,
-  scope_values_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS iam.login_sessions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  refresh_token_hash TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  expires_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS iam.operation_audit_logs (
+CREATE TABLE iam.operation_audit_logs (
   id TEXT PRIMARY KEY,
   operator_user_id TEXT,
   operator_username TEXT NOT NULL,
   action TEXT NOT NULL,
   resource_type TEXT NOT NULL,
   resource_id TEXT,
-  details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   request_id TEXT NOT NULL,
   ip TEXT NOT NULL,
+  details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS channel.channels (
+CREATE TABLE channel.channels (
   id TEXT PRIMARY KEY,
   channel_code TEXT NOT NULL UNIQUE,
   channel_name TEXT NOT NULL,
-  channel_type TEXT NOT NULL,
-  parent_channel_id TEXT,
+  channel_type TEXT NOT NULL DEFAULT 'API',
   status TEXT NOT NULL DEFAULT 'ACTIVE',
-  settlement_subject_id TEXT,
+  settlement_mode TEXT NOT NULL DEFAULT 'PREPAID',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS channel.channel_api_credentials (
+CREATE TABLE channel.channel_api_credentials (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL,
   access_key TEXT NOT NULL UNIQUE,
@@ -107,32 +80,34 @@ CREATE TABLE IF NOT EXISTS channel.channel_api_credentials (
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (channel_id, access_key)
 );
 
-CREATE TABLE IF NOT EXISTS channel.channel_product_authorizations (
+CREATE TABLE channel.channel_product_authorizations (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL,
-  product_id TEXT,
-  sku_id TEXT,
+  product_id TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'ACTIVE',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (channel_id, product_id)
 );
 
-CREATE TABLE IF NOT EXISTS channel.channel_price_policies (
+CREATE TABLE channel.channel_price_policies (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL,
-  sku_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
   sale_price NUMERIC(18, 2) NOT NULL,
   currency TEXT NOT NULL DEFAULT 'CNY',
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   effective_from TIMESTAMPTZ,
   effective_to TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (channel_id, product_id)
 );
 
-CREATE TABLE IF NOT EXISTS channel.channel_limit_rules (
+CREATE TABLE channel.channel_limit_rules (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL UNIQUE,
   single_limit NUMERIC(18, 2) NOT NULL DEFAULT 10000,
@@ -143,16 +118,7 @@ CREATE TABLE IF NOT EXISTS channel.channel_limit_rules (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS channel.channel_access_controls (
-  id TEXT PRIMARY KEY,
-  channel_id TEXT NOT NULL,
-  control_type TEXT NOT NULL,
-  target_value TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS channel.channel_callback_configs (
+CREATE TABLE channel.channel_callback_configs (
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL UNIQUE,
   callback_url TEXT NOT NULL,
@@ -164,153 +130,96 @@ CREATE TABLE IF NOT EXISTS channel.channel_callback_configs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS product.product_categories (
+CREATE TABLE product.mobile_segments (
   id TEXT PRIMARY KEY,
-  category_name TEXT NOT NULL,
-  parent_id TEXT,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  sort_no INTEGER NOT NULL DEFAULT 0,
+  mobile_prefix TEXT NOT NULL UNIQUE,
+  province_name TEXT NOT NULL,
+  city_name TEXT,
+  isp_code TEXT NOT NULL,
+  isp_name TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS product.products (
+CREATE TABLE product.recharge_products (
   id TEXT PRIMARY KEY,
-  category_id TEXT NOT NULL,
+  product_code TEXT NOT NULL UNIQUE,
   product_name TEXT NOT NULL,
-  product_type TEXT NOT NULL,
-  delivery_type TEXT NOT NULL,
-  target_type TEXT NOT NULL,
+  carrier_code TEXT NOT NULL,
+  province_name TEXT NOT NULL DEFAULT '全国',
+  face_value NUMERIC(18, 2) NOT NULL,
+  recharge_mode TEXT NOT NULL,
+  sales_unit TEXT NOT NULL DEFAULT 'CNY',
   status TEXT NOT NULL DEFAULT 'ACTIVE',
-  valid_from TIMESTAMPTZ,
-  valid_to TIMESTAMPTZ,
-  base_attributes_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS product.product_skus (
+CREATE TABLE product.product_supplier_mappings (
   id TEXT PRIMARY KEY,
   product_id TEXT NOT NULL,
-  sku_name TEXT NOT NULL,
-  face_value NUMERIC(18, 2) NOT NULL,
-  operator TEXT,
-  region TEXT,
-  sale_status TEXT NOT NULL DEFAULT 'ON_SHELF',
-  base_cost_price NUMERIC(18, 2) NOT NULL DEFAULT 0,
-  base_sale_price NUMERIC(18, 2) NOT NULL DEFAULT 0,
-  ext_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS product.sku_supplier_mappings (
-  id TEXT PRIMARY KEY,
-  sku_id TEXT NOT NULL,
   supplier_id TEXT NOT NULL,
-  supplier_sku_code TEXT NOT NULL,
-  priority INTEGER NOT NULL DEFAULT 1,
-  weight INTEGER NOT NULL DEFAULT 100,
+  supplier_product_code TEXT NOT NULL,
   route_type TEXT NOT NULL DEFAULT 'PRIMARY',
-  cost_price NUMERIC(18, 2) NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  valid_from TIMESTAMPTZ,
-  valid_to TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS product.product_change_logs (
-  id TEXT PRIMARY KEY,
-  entity_type TEXT NOT NULL,
-  entity_id TEXT NOT NULL,
-  action TEXT NOT NULL,
-  before_json JSONB,
-  after_json JSONB,
-  operator_user_id TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS risk.risk_rules (
-  id TEXT PRIMARY KEY,
-  rule_code TEXT NOT NULL UNIQUE,
-  rule_name TEXT NOT NULL,
-  rule_type TEXT NOT NULL,
-  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   priority INTEGER NOT NULL DEFAULT 1,
+  cost_price NUMERIC(18, 2) NOT NULL,
+  sales_status TEXT NOT NULL DEFAULT 'ON_SALE',
+  inventory_quantity INTEGER NOT NULL DEFAULT 999999,
+  dynamic_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (product_id, supplier_id)
 );
 
-CREATE TABLE IF NOT EXISTS risk.risk_black_white_list (
+CREATE TABLE product.product_sync_logs (
   id TEXT PRIMARY KEY,
-  entry_type TEXT NOT NULL,
-  target_value TEXT NOT NULL,
-  list_type TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (entry_type, target_value, list_type)
-);
-
-CREATE TABLE IF NOT EXISTS risk.risk_signals (
-  id TEXT PRIMARY KEY,
-  order_no TEXT,
-  channel_id TEXT,
-  signal_type TEXT NOT NULL,
-  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  supplier_id TEXT NOT NULL,
+  sync_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  response_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  error_message TEXT,
+  synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS risk.risk_decisions (
-  id TEXT PRIMARY KEY,
-  order_no TEXT,
-  channel_id TEXT,
-  decision TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  hit_rules_json JSONB NOT NULL DEFAULT '[]'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS risk.risk_review_cases (
-  id TEXT PRIMARY KEY,
-  order_no TEXT,
-  channel_id TEXT,
-  status TEXT NOT NULL DEFAULT 'PENDING',
-  reason TEXT NOT NULL,
-  reviewer_user_id TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS ordering.orders (
+CREATE TABLE ordering.orders (
   id TEXT PRIMARY KEY,
   order_no TEXT NOT NULL UNIQUE,
   channel_order_no TEXT NOT NULL,
   channel_id TEXT NOT NULL,
   parent_channel_id TEXT,
   product_id TEXT NOT NULL,
-  sku_id TEXT NOT NULL,
+  mobile_number TEXT NOT NULL,
+  province_name TEXT,
+  isp_code TEXT,
+  face_value NUMERIC(18, 2) NOT NULL,
   sale_price NUMERIC(18, 2) NOT NULL,
   cost_price NUMERIC(18, 2) NOT NULL,
   currency TEXT NOT NULL DEFAULT 'CNY',
-  payment_mode TEXT NOT NULL,
-  payment_no TEXT,
+  payment_mode TEXT NOT NULL DEFAULT 'BALANCE',
   main_status TEXT NOT NULL,
   payment_status TEXT NOT NULL,
   supplier_status TEXT NOT NULL,
   notify_status TEXT NOT NULL,
+  requested_product_type TEXT NOT NULL DEFAULT 'MIXED',
+  refund_status TEXT NOT NULL DEFAULT 'NONE',
+  monitor_status TEXT NOT NULL DEFAULT 'NORMAL',
   risk_status TEXT NOT NULL,
-  channel_snapshot_json JSONB NOT NULL,
-  product_snapshot_json JSONB NOT NULL,
-  callback_snapshot_json JSONB NOT NULL,
-  supplier_route_snapshot_json JSONB NOT NULL,
+  callback_url TEXT,
+  warning_deadline_at TIMESTAMPTZ,
+  expire_deadline_at TIMESTAMPTZ,
+  channel_snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  product_snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  callback_snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  supplier_route_snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   risk_snapshot_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ext_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   exception_tag TEXT,
   remark TEXT,
-  version INTEGER NOT NULL DEFAULT 1,
   request_id TEXT NOT NULL,
+  ext_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   paid_at TIMESTAMPTZ,
@@ -318,7 +227,7 @@ CREATE TABLE IF NOT EXISTS ordering.orders (
   UNIQUE (channel_id, channel_order_no)
 );
 
-CREATE TABLE IF NOT EXISTS ordering.order_events (
+CREATE TABLE ordering.order_events (
   id TEXT PRIMARY KEY,
   order_no TEXT NOT NULL,
   event_type TEXT NOT NULL,
@@ -327,71 +236,12 @@ CREATE TABLE IF NOT EXISTS ordering.order_events (
   before_status_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   after_status_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  idempotency_key TEXT NOT NULL,
   operator TEXT NOT NULL,
   request_id TEXT NOT NULL,
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS ordering.order_remarks (
-  id TEXT PRIMARY KEY,
-  order_no TEXT NOT NULL,
-  remark TEXT NOT NULL,
-  operator_user_id TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_channels (
-  id TEXT PRIMARY KEY,
-  channel_code TEXT NOT NULL UNIQUE,
-  channel_name TEXT NOT NULL,
-  provider_type TEXT NOT NULL,
-  config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_orders (
-  id TEXT PRIMARY KEY,
-  payment_no TEXT NOT NULL UNIQUE,
-  order_no TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  payment_channel_code TEXT NOT NULL,
-  pay_amount NUMERIC(18, 2) NOT NULL,
-  currency TEXT NOT NULL DEFAULT 'CNY',
-  status TEXT NOT NULL,
-  payment_mode TEXT NOT NULL,
-  third_trade_no TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  paid_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_callback_logs (
-  id TEXT PRIMARY KEY,
-  payment_no TEXT,
-  provider TEXT NOT NULL,
-  headers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  body_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  signature_valid BOOLEAN NOT NULL DEFAULT FALSE,
-  request_id TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS payment.payment_refunds (
-  id TEXT PRIMARY KEY,
-  refund_no TEXT NOT NULL UNIQUE,
-  payment_no TEXT NOT NULL,
-  order_no TEXT NOT NULL,
-  amount NUMERIC(18, 2) NOT NULL,
-  status TEXT NOT NULL,
-  provider_refund_no TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS supplier.suppliers (
+CREATE TABLE supplier.suppliers (
   id TEXT PRIMARY KEY,
   supplier_code TEXT NOT NULL UNIQUE,
   supplier_name TEXT NOT NULL,
@@ -401,7 +251,7 @@ CREATE TABLE IF NOT EXISTS supplier.suppliers (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS supplier.supplier_configs (
+CREATE TABLE supplier.supplier_configs (
   id TEXT PRIMARY KEY,
   supplier_id TEXT NOT NULL UNIQUE,
   config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -412,7 +262,21 @@ CREATE TABLE IF NOT EXISTS supplier.supplier_configs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS supplier.supplier_orders (
+CREATE TABLE supplier.supplier_request_logs (
+  id TEXT PRIMARY KEY,
+  supplier_id TEXT NOT NULL,
+  order_no TEXT,
+  supplier_product_code TEXT,
+  request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  response_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  request_status TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL DEFAULT 1,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE supplier.supplier_orders (
   id TEXT PRIMARY KEY,
   order_no TEXT NOT NULL,
   supplier_id TEXT NOT NULL,
@@ -423,13 +287,15 @@ CREATE TABLE IF NOT EXISTS supplier.supplier_orders (
   attempt_no INTEGER NOT NULL DEFAULT 1,
   duration_ms INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (order_no, supplier_id)
 );
 
-CREATE TABLE IF NOT EXISTS supplier.supplier_callback_logs (
+CREATE TABLE supplier.supplier_callback_logs (
   id TEXT PRIMARY KEY,
   supplier_id TEXT,
   supplier_code TEXT NOT NULL,
+  order_no TEXT,
   supplier_order_no TEXT,
   headers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   body_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -439,20 +305,33 @@ CREATE TABLE IF NOT EXISTS supplier.supplier_callback_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS supplier.supplier_health_stats (
+CREATE TABLE supplier.supplier_reconcile_diffs (
   id TEXT PRIMARY KEY,
   supplier_id TEXT NOT NULL,
-  stat_date DATE NOT NULL,
-  success_count INTEGER NOT NULL DEFAULT 0,
-  fail_count INTEGER NOT NULL DEFAULT 0,
-  timeout_count INTEGER NOT NULL DEFAULT 0,
-  avg_duration_ms INTEGER NOT NULL DEFAULT 0,
-  avg_callback_delay_ms INTEGER NOT NULL DEFAULT 0,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (supplier_id, stat_date)
+  reconcile_date DATE NOT NULL,
+  order_no TEXT,
+  diff_type TEXT NOT NULL,
+  diff_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
+  details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS ledger.accounts (
+CREATE TABLE supplier.supplier_runtime_breakers (
+  id TEXT PRIMARY KEY,
+  supplier_id TEXT NOT NULL UNIQUE,
+  breaker_status TEXT NOT NULL DEFAULT 'CLOSED',
+  fail_count_window INTEGER NOT NULL DEFAULT 0,
+  fail_threshold INTEGER NOT NULL DEFAULT 5,
+  opened_at TIMESTAMPTZ,
+  last_probe_at TIMESTAMPTZ,
+  recovery_timeout_seconds INTEGER NOT NULL DEFAULT 60,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE ledger.accounts (
   id TEXT PRIMARY KEY,
   owner_type TEXT NOT NULL,
   owner_id TEXT NOT NULL,
@@ -465,7 +344,7 @@ CREATE TABLE IF NOT EXISTS ledger.accounts (
   UNIQUE (owner_type, owner_id, currency)
 );
 
-CREATE TABLE IF NOT EXISTS ledger.account_ledgers (
+CREATE TABLE ledger.account_ledgers (
   id TEXT PRIMARY KEY,
   ledger_no TEXT NOT NULL UNIQUE,
   account_id TEXT NOT NULL,
@@ -481,47 +360,40 @@ CREATE TABLE IF NOT EXISTS ledger.account_ledgers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS ledger.profit_rules (
+CREATE TABLE risk.risk_rules (
   id TEXT PRIMARY KEY,
+  rule_code TEXT NOT NULL UNIQUE,
   rule_name TEXT NOT NULL,
-  channel_id TEXT,
-  product_id TEXT,
-  sku_id TEXT,
+  rule_type TEXT NOT NULL,
   config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  priority INTEGER NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'ACTIVE',
-  effective_from TIMESTAMPTZ,
-  effective_to TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS ledger.settlement_statements (
+CREATE TABLE risk.risk_black_white_list (
   id TEXT PRIMARY KEY,
-  settlement_no TEXT NOT NULL UNIQUE,
-  owner_type TEXT NOT NULL,
-  owner_id TEXT NOT NULL,
-  period_start TIMESTAMPTZ NOT NULL,
-  period_end TIMESTAMPTZ NOT NULL,
-  total_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'PENDING',
-  summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  entry_type TEXT NOT NULL,
+  target_value TEXT NOT NULL,
+  list_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  remark TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  UNIQUE (entry_type, target_value, list_type)
 );
 
-CREATE TABLE IF NOT EXISTS ledger.reconciliation_records (
+CREATE TABLE risk.risk_decisions (
   id TEXT PRIMARY KEY,
-  reconcile_no TEXT NOT NULL UNIQUE,
-  source_type TEXT NOT NULL,
-  reference_no TEXT NOT NULL,
-  diff_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'PENDING',
-  details_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  order_no TEXT,
+  channel_id TEXT,
+  decision TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  hit_rules_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS notification.notification_tasks (
+CREATE TABLE notification.notification_tasks (
   id TEXT PRIMARY KEY,
   task_no TEXT NOT NULL UNIQUE,
   order_no TEXT NOT NULL,
@@ -539,18 +411,7 @@ CREATE TABLE IF NOT EXISTS notification.notification_tasks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS notification.notification_templates (
-  id TEXT PRIMARY KEY,
-  template_code TEXT NOT NULL UNIQUE,
-  notify_type TEXT NOT NULL,
-  subject TEXT,
-  body_template TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS notification.notification_delivery_logs (
+CREATE TABLE notification.notification_delivery_logs (
   id TEXT PRIMARY KEY,
   task_no TEXT NOT NULL,
   request_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -560,14 +421,15 @@ CREATE TABLE IF NOT EXISTS notification.notification_delivery_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS notification.notification_dead_letters (
+CREATE TABLE notification.notification_dead_letters (
   id TEXT PRIMARY KEY,
   task_no TEXT NOT NULL UNIQUE,
   reason TEXT NOT NULL,
+  payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS worker.worker_jobs (
+CREATE TABLE worker.worker_jobs (
   id TEXT PRIMARY KEY,
   job_type TEXT NOT NULL,
   business_key TEXT NOT NULL,
@@ -582,7 +444,7 @@ CREATE TABLE IF NOT EXISTS worker.worker_jobs (
   UNIQUE (job_type, business_key)
 );
 
-CREATE TABLE IF NOT EXISTS worker.worker_job_attempts (
+CREATE TABLE worker.worker_job_attempts (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL,
   attempt_no INTEGER NOT NULL,
@@ -592,7 +454,7 @@ CREATE TABLE IF NOT EXISTS worker.worker_job_attempts (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS worker.worker_dead_letters (
+CREATE TABLE worker.worker_dead_letters (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL UNIQUE,
   business_key TEXT NOT NULL,
@@ -601,23 +463,34 @@ CREATE TABLE IF NOT EXISTS worker.worker_dead_letters (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_ordering_orders_channel_created
+CREATE INDEX idx_ordering_orders_channel_created
   ON ordering.orders (channel_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_ordering_order_events_order_no
+CREATE INDEX idx_ordering_order_events_order_no
   ON ordering.order_events (order_no, occurred_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_payment_orders_order_no
-  ON payment.payment_orders (order_no);
+CREATE INDEX idx_product_mobile_segments_prefix
+  ON product.mobile_segments (mobile_prefix);
 
-CREATE INDEX IF NOT EXISTS idx_supplier_orders_order_no
-  ON supplier.supplier_orders (order_no);
+CREATE INDEX idx_product_mappings_supplier
+  ON product.product_supplier_mappings (supplier_id, priority ASC);
 
-CREATE INDEX IF NOT EXISTS idx_ledger_ledgers_order_no
-  ON ledger.account_ledgers (order_no);
+CREATE INDEX idx_supplier_request_logs_order
+  ON supplier.supplier_request_logs (order_no, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_notification_tasks_order_no
-  ON notification.notification_tasks (order_no);
+CREATE UNIQUE INDEX uq_supplier_reconcile_diffs_dedupe
+  ON supplier.supplier_reconcile_diffs (
+    supplier_id,
+    reconcile_date,
+    COALESCE(order_no, ''),
+    diff_type
+  );
 
-CREATE INDEX IF NOT EXISTS idx_worker_jobs_status_next_run
+CREATE INDEX idx_ledger_ledgers_order_no
+  ON ledger.account_ledgers (order_no, created_at DESC);
+
+CREATE INDEX idx_notification_tasks_order_no
+  ON notification.notification_tasks (order_no, created_at DESC);
+
+CREATE INDEX idx_worker_jobs_status_next_run
   ON worker.worker_jobs (status, next_run_at);

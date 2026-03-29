@@ -142,6 +142,29 @@ export class WorkerRepository {
     };
   }
 
+  async listByJobType(jobType: string, limit = 20): Promise<WorkerJob[]> {
+    const rows = await many<WorkerJob>(db<WorkerJob[]>`
+      SELECT
+        id,
+        job_type AS "jobType",
+        business_key AS "businessKey",
+        payload_json AS "payloadJson",
+        status,
+        attempt_count AS "attemptCount",
+        max_attempts AS "maxAttempts",
+        next_run_at AS "nextRunAt",
+        last_error AS "lastError",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM worker.worker_jobs
+      WHERE job_type = ${jobType}
+      ORDER BY created_at DESC
+      LIMIT ${limit}
+    `);
+
+    return rows.map((row) => this.mapJob(row));
+  }
+
   async getById(jobId: string): Promise<WorkerJob | null> {
     const row = await first<WorkerJob>(db<WorkerJob[]>`
       SELECT
@@ -164,38 +187,41 @@ export class WorkerRepository {
     return row ? this.mapJob(row) : null;
   }
 
-  async listReady(limit: number): Promise<WorkerJob[]> {
-    const rows = await many<WorkerJob>(db<WorkerJob[]>`
-      SELECT
-        id,
-        job_type AS "jobType",
-        business_key AS "businessKey",
-        payload_json AS "payloadJson",
-        status,
-        attempt_count AS "attemptCount",
-        max_attempts AS "maxAttempts",
-        next_run_at AS "nextRunAt",
-        last_error AS "lastError",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
-      FROM worker.worker_jobs
-      WHERE status IN ('READY', 'RETRY_WAIT')
-        AND next_run_at <= NOW()
-      ORDER BY next_run_at ASC
-      LIMIT ${limit}
-    `);
+  async claimReady(limit: number): Promise<WorkerJob[]> {
+    const rows = await db.begin(
+      (tx) =>
+        tx<WorkerJob[]>`
+        WITH claimable AS (
+          SELECT id
+          FROM worker.worker_jobs
+          WHERE status IN ('READY', 'RETRY_WAIT')
+            AND next_run_at <= NOW()
+          ORDER BY next_run_at ASC, created_at ASC, id ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT ${limit}
+        )
+        UPDATE worker.worker_jobs AS job
+        SET
+          status = 'RUNNING',
+          updated_at = NOW()
+        FROM claimable
+        WHERE job.id = claimable.id
+        RETURNING
+          job.id,
+          job.job_type AS "jobType",
+          job.business_key AS "businessKey",
+          job.payload_json AS "payloadJson",
+          job.status,
+          job.attempt_count AS "attemptCount",
+          job.max_attempts AS "maxAttempts",
+          job.next_run_at AS "nextRunAt",
+          job.last_error AS "lastError",
+          job.created_at AS "createdAt",
+          job.updated_at AS "updatedAt"
+      `,
+    );
 
     return rows.map((row) => this.mapJob(row));
-  }
-
-  async markRunning(jobId: string): Promise<void> {
-    await db`
-      UPDATE worker.worker_jobs
-      SET
-        status = 'RUNNING',
-        updated_at = NOW()
-      WHERE id = ${jobId}
-    `;
   }
 
   async markSuccess(jobId: string): Promise<void> {

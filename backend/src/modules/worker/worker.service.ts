@@ -2,7 +2,11 @@ import { notFound } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import type { WorkerContract } from '@/modules/worker/contracts';
 import type { WorkerRepository } from '@/modules/worker/worker.repository';
-import type { CreateWorkerJobInput, WorkerJobHandler } from '@/modules/worker/worker.types';
+import type {
+  CreateWorkerJobInput,
+  WorkerJobHandler,
+  WorkerJobType,
+} from '@/modules/worker/worker.types';
 
 const retryBackoffInSeconds = [1, 5, 10, 30, 60];
 
@@ -11,13 +15,17 @@ function addSeconds(date: Date, seconds: number): Date {
 }
 
 export class WorkerService implements WorkerContract {
-  private readonly handlers = new Map<string, WorkerJobHandler>();
+  private readonly handlers = new Map<WorkerJobType, WorkerJobHandler>();
   private timer: Timer | null = null;
 
   constructor(private readonly repository: WorkerRepository) {}
 
-  registerHandler(jobType: string, handler: WorkerJobHandler): void {
+  registerHandler(jobType: WorkerJobType, handler: WorkerJobHandler): void {
     this.handlers.set(jobType, handler);
+  }
+
+  listRegisteredJobTypes(): WorkerJobType[] {
+    return Array.from(this.handlers.keys());
   }
 
   async enqueue(input: CreateWorkerJobInput) {
@@ -68,17 +76,15 @@ export class WorkerService implements WorkerContract {
   }
 
   async processReadyJobs(limit = 20): Promise<void> {
-    const jobs = await this.repository.listReady(limit);
+    const jobs = await this.repository.claimReady(limit);
 
     for (const job of jobs) {
-      const handler = this.handlers.get(job.jobType);
+      const handler = this.handlers.get(job.jobType as WorkerJobType);
 
       if (!handler) {
         await this.repository.markDeadLetter(job.id, `未找到任务处理器: ${job.jobType}`);
         continue;
       }
-
-      await this.repository.markRunning(job.id);
       const startedAt = Date.now();
 
       try {

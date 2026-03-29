@@ -4,7 +4,6 @@ export const CreateChannelBodySchema = t.Object({
   channelCode: t.String({ minLength: 2 }),
   channelName: t.String({ minLength: 1 }),
   channelType: t.String({ minLength: 1 }),
-  parentChannelId: t.Optional(t.String()),
 });
 
 export const CreateCredentialBodySchema = t.Object({
@@ -15,13 +14,12 @@ export const CreateCredentialBodySchema = t.Object({
 
 export const CreateAuthorizationBodySchema = t.Object({
   channelId: t.String(),
-  productId: t.Optional(t.String()),
-  skuId: t.Optional(t.String()),
+  productId: t.String(),
 });
 
 export const CreatePricePolicyBodySchema = t.Object({
   channelId: t.String(),
-  skuId: t.String(),
+  productId: t.String(),
   salePrice: t.Number({ minimum: 0 }),
 });
 

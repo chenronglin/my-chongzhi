@@ -20,12 +20,7 @@ export class ChannelsService implements ChannelContract {
     return this.repository.listCredentials();
   }
 
-  async createChannel(input: {
-    channelCode: string;
-    channelName: string;
-    channelType: string;
-    parentChannelId?: string;
-  }) {
+  async createChannel(input: { channelCode: string; channelName: string; channelType: string }) {
     const existing = await this.repository.findChannelByCode(input.channelCode);
 
     if (existing) {
@@ -49,11 +44,11 @@ export class ChannelsService implements ChannelContract {
     });
   }
 
-  async addAuthorization(input: { channelId: string; productId?: string; skuId?: string }) {
+  async addAuthorization(input: { channelId: string; productId: string }) {
     await this.repository.addAuthorization(input);
   }
 
-  async upsertPricePolicy(input: { channelId: string; skuId: string; salePrice: number }) {
+  async upsertPricePolicy(input: { channelId: string; productId: string; salePrice: number }) {
     await this.repository.upsertPricePolicy(input);
   }
 
@@ -143,12 +138,7 @@ export class ChannelsService implements ChannelContract {
     };
   }
 
-  async getOrderPolicy(input: {
-    channelId: string;
-    productId: string;
-    skuId: string;
-    orderAmount: number;
-  }) {
+  async getOrderPolicy(input: { channelId: string; productId: string; orderAmount: number }) {
     const channel = await this.repository.findChannelById(input.channelId);
 
     if (!channel) {
@@ -157,16 +147,6 @@ export class ChannelsService implements ChannelContract {
 
     if (channel.status !== 'ACTIVE') {
       throw forbidden('渠道不可用');
-    }
-
-    const authorized = await this.repository.isAuthorized(
-      input.channelId,
-      input.productId,
-      input.skuId,
-    );
-
-    if (!authorized) {
-      throw forbidden('当前渠道未授权该商品');
     }
 
     const callbackConfig = await this.repository.findCallbackConfig(input.channelId);
@@ -181,7 +161,17 @@ export class ChannelsService implements ChannelContract {
       throw forbidden('订单金额超出单笔限额');
     }
 
-    const pricePolicy = await this.repository.findPricePolicy(input.channelId, input.skuId);
+    let pricePolicy = null;
+
+    if (input.productId) {
+      const authorized = await this.repository.isAuthorized(input.channelId, input.productId);
+
+      if (!authorized) {
+        throw forbidden('当前渠道未授权该商品');
+      }
+
+      pricePolicy = await this.repository.findPricePolicy(input.channelId, input.productId);
+    }
 
     return {
       channel,

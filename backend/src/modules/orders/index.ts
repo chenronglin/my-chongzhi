@@ -1,11 +1,11 @@
 import type { ChannelsService } from '@/modules/channels/channels.service';
 import type { ChannelContract } from '@/modules/channels/contracts';
 import type { IamService } from '@/modules/iam/iam.service';
+import type { LedgerContract } from '@/modules/ledger/contracts';
 import type { OrderContract } from '@/modules/orders/contracts';
 import { OrdersRepository } from '@/modules/orders/orders.repository';
 import { createOrdersRoutes } from '@/modules/orders/orders.routes';
 import { OrdersService } from '@/modules/orders/orders.service';
-import type { PaymentContract } from '@/modules/payments/contracts';
 import type { ProductContract } from '@/modules/products/contracts';
 import type { RiskContract } from '@/modules/risk/contracts';
 import type { WorkerContract } from '@/modules/worker/contracts';
@@ -20,7 +20,7 @@ export function createOrdersModule(input: {
   channelContract: ChannelContract;
   productContract: ProductContract;
   riskContract: RiskContract;
-  paymentContract: PaymentContract;
+  ledgerContract: LedgerContract;
   workerContract: WorkerContract;
   channelsService: ChannelsService;
   iamService: IamService;
@@ -31,7 +31,7 @@ export function createOrdersModule(input: {
     input.channelContract,
     input.productContract,
     input.riskContract,
-    input.paymentContract,
+    input.ledgerContract,
     input.workerContract,
   );
 
